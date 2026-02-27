@@ -70,4 +70,4 @@ AdaClaw is configured via `config.toml`. See `config.example.toml` for a complet
 
 ## License
 
-This project is licensed under the MIT OR Apache-2.0 License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.

@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["AdaClaw Contributors"]
 description = "Lightweight, secure, multi-channel Rust AI Agent Runtime"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 
 [dependencies]
 adaclaw-core = { path = "crates/adaclaw-core" }

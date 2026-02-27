@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  adaclaw:
+    image: ghcr.io/your-org/adaclaw:latest
+    # build: .
+    restart: unless-stopped
+    environment:
+      - ADACLAW_AUTONOMY_LEVEL=full
+      - ADACLAW_API_KEY=${ADACLAW_API_KEY}
+    volumes:
+      - ./workspace:/app/workspace
+      - ./config.toml:/app/config.toml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

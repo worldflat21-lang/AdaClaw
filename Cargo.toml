@@ -1,0 +1,45 @@
+[workspace]
+members = [
+    ".",
+    "crates/adaclaw-core",
+    "crates/adaclaw-providers",
+    "crates/adaclaw-memory",
+    "crates/adaclaw-tools",
+    "crates/adaclaw-channels",
+    "crates/adaclaw-security", "crates/adaclaw-server",
+]
+resolver = "2"
+
+[package]
+name = "adaclaw"
+version = "0.1.0"
+edition = "2021"
+authors = ["AdaClaw Contributors"]
+description = "Lightweight, secure, multi-channel Rust AI Agent Runtime"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+adaclaw-core = { path = "crates/adaclaw-core" }
+adaclaw-providers = { path = "crates/adaclaw-providers" }
+adaclaw-memory = { path = "crates/adaclaw-memory" }
+adaclaw-tools = { path = "crates/adaclaw-tools" }
+adaclaw-channels = { path = "crates/adaclaw-channels" }
+adaclaw-security = { path = "crates/adaclaw-security" }
+adaclaw-server = { path = "crates/adaclaw-server" }
+tokio = { version = "1.36", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3"
+regex = "1.10"
+lazy_static = "1.4"
+tokio-util = "0.7.18"
+async-trait = "0.1.89"
+uuid = { version = "1.8", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.10"

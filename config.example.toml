@@ -1,0 +1,63 @@
+# AdaClaw Example Configuration File
+# Save as config.toml
+
+[system]
+# Define the environment: development, production
+env = "development"
+log_level = "info"
+
+[providers]
+openai = { api_key = "sk-..." }
+anthropic = { api_key = "sk-ant-..." }
+ollama = { base_url = "http://localhost:11434" }
+
+[agents.assistant]
+model = "openrouter/auto"
+description = "Helpful AI Assistant"
+# Default tools allowed
+tools = ["shell", "file_read", "file_write", "http_request"]
+
+[agents.coder]
+model = "anthropic/claude-3-5-sonnet-20241022"
+temperature = 0.2
+tools = ["shell", "file_read", "file_write"]
+workspace = "~/.adaclaw/workspace-coder"
+
+[agents.assistant.subagents]
+allow = ["coder"]
+
+[channels.cli]
+enabled = true
+
+[channels.telegram]
+enabled = false
+bot_token = "YOUR_BOT_TOKEN"
+allow_from = ["your_username"]
+
+[routing]
+[[routing.rules]]
+channel_pattern = "telegram:.*"
+agent = "assistant"
+
+[[routing.rules]]
+default = true
+agent = "assistant"
+
+[memory]
+provider = "sqlite"
+path = "memory.db"
+# Options: none, fastembed, openai
+embedding_provider = "fastembed"
+
+[security]
+autonomy_level = "Supervised" # ReadOnly, Supervised, Full
+allow_full_outside_container = false
+
+[security.rate_limit]
+per_user_per_minute = 10
+daily_cost_budget = 5.0 # USD
+
+[observability]
+metrics_enabled = true
+metrics_port = 9090
+trace_enabled = true

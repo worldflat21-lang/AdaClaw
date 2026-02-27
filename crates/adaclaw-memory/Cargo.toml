@@ -1,0 +1,37 @@
+[package]
+name = "adaclaw-memory"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# Enable local ONNX embedding via fastembed (AllMiniLML6V2, ~22 MB model download)
+fastembed = ["dep:fastembed"]
+# Enable OpenAI embedding API (text-embedding-3-small)
+openai-embed = ["dep:reqwest"]
+# Enable sqlite-vec vector extension (KNN search)
+sqlite-vec = ["dep:sqlite-vec"]
+
+[dependencies]
+adaclaw-core  = { path = "../adaclaw-core" }
+anyhow        = "1.0"
+async-trait   = "0.1"
+serde         = { version = "1.0", features = ["derive"] }
+serde_json    = "1.0"
+rusqlite      = { version = "0.31", features = ["bundled"] }
+tracing       = "0.1"
+futures-util  = "0.3"
+uuid          = { version = "1", features = ["v4"] }
+
+# Optional: vector extension for sqlite
+sqlite-vec   = { version = "0.1", optional = true }
+
+# Optional: local ONNX embedding
+fastembed    = { version = "4", optional = true }
+
+# Optional: OpenAI embedding API
+reqwest      = { version = "0.12", features = ["json"], optional = true }
+
+[dev-dependencies]
+tokio    = { version = "1.36", features = ["full"] }
+tempfile = "3"

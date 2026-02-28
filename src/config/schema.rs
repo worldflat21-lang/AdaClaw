@@ -5,6 +5,11 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    /// Schema version number.  Absent in old configs (treated as 0).
+    /// Current version: 1.  Bump whenever a breaking change is made.
+    #[serde(default)]
+    pub config_version: u32,
+
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
 
@@ -44,17 +49,60 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load config from a TOML file, then apply environment variable overrides.
+    /// Load config from a TOML file, apply version migration, then apply
+    /// environment variable overrides.
+    ///
+    /// Returns `Err` if the file cannot be read, the TOML is malformed, or the
+    /// stored `config_version` is newer than this binary supports.
+    ///
+    /// Migration notes (e.g. "added config_version = 1") are emitted as
+    /// `tracing::warn!` messages so they surface in daemon logs without
+    /// interrupting the startup sequence.
     pub fn load_from_file(path: &str) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
-        let mut cfg: Config = toml::from_str(&text)?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read config file '{}': {}", path, e))?;
+
+        let raw: Config = toml::from_str(&text).map_err(|e| {
+            // Enrich the toml error with the file path so users can find it fast
+            anyhow::anyhow!("Config file '{}' has a TOML syntax error:\n  {}", path, e)
+        })?;
+
+        // Run forward migrations.  On error (future version) we propagate
+        // immediately — there is nothing safe we can do.
+        let (mut cfg, notes) = super::migration::migrate(raw)?;
+        for note in &notes {
+            tracing::warn!("[config migration] {}", note);
+        }
+
         cfg.apply_env_overrides();
         Ok(cfg)
     }
 
     /// Load config from `config.toml` in the current directory (best-effort).
+    ///
+    /// Falls back to a default config on any error (missing file, parse
+    /// failures, etc.).  For production use prefer [`load_from_file`] so
+    /// errors are visible.
     pub fn load() -> Self {
         Self::load_from_file("config.toml").unwrap_or_default().with_env()
+    }
+
+    /// Run semantic validation and return all field-level errors found.
+    ///
+    /// An empty `Vec` means the config is valid.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let cfg = Config::load_from_file("config.toml")?;
+    /// let errors = cfg.validate();
+    /// if !errors.is_empty() {
+    ///     for e in &errors { eprintln!("  • {e}"); }
+    ///     anyhow::bail!("{} config error(s) found.", errors.len());
+    /// }
+    /// ```
+    pub fn validate(&self) -> Vec<super::validation::ValidationError> {
+        super::validation::validate(self)
     }
 
     fn with_env(mut self) -> Self {
@@ -369,7 +417,7 @@ fn default_per_user() -> u32 {
     60
 }
 fn default_per_channel() -> u32 {
-    120
+    200
 }
 fn default_max_actions() -> u32 {
     200
@@ -417,10 +465,41 @@ pub struct SecurityConfig {
     /// In-memory rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+
+    // ── Phase 11 Round 5: Approval UX ─────────────────────────────────────────
+
+    /// Tools that never require approval in Supervised mode.
+    ///
+    /// Example: `["file_read", "memory_recall", "memory_store"]`
+    ///
+    /// These tools always execute automatically regardless of `autonomy_level`,
+    /// useful for safe read-only operations that don't need human oversight.
+    #[serde(default)]
+    pub auto_approve: Vec<String>,
+
+    /// Tools that always require approval, overriding the session allowlist.
+    ///
+    /// Example: `["shell", "file_write", "http_request"]`
+    ///
+    /// Even if the user previously approved a tool with "Always", tools in this
+    /// list will still prompt every time. Use for high-risk tools.
+    #[serde(default)]
+    pub always_ask: Vec<String>,
+
+    /// Pending approval request expiry in minutes (default: 30).
+    ///
+    /// After this timeout, unanswered approval requests are automatically expired
+    /// and treated as denied. The user must re-trigger the tool call.
+    #[serde(default = "default_approval_timeout")]
+    pub approval_timeout_minutes: u64,
 }
 
 fn default_autonomy() -> String {
     "supervised".to_string()
+}
+
+fn default_approval_timeout() -> u64 {
+    30
 }
 
 impl Default for SecurityConfig {
@@ -434,6 +513,9 @@ impl Default for SecurityConfig {
             estop_state_path: None,
             require_otp_for_estop: false,
             rate_limit: RateLimitConfig::default(),
+            auto_approve: Vec::new(),
+            always_ask: Vec::new(),
+            approval_timeout_minutes: default_approval_timeout(),
         }
     }
 }

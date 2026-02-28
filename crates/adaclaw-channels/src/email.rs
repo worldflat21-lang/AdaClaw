@@ -379,6 +379,7 @@ fn extract_text_body(mail: &mailparse::ParsedMail<'_>) -> Result<String> {
 // ── SMTP 发信 ─────────────────────────────────────────────────────────────────
 
 /// 在 spawn_blocking 内通过 SMTP 发送邮件（同步 lettre）
+#[allow(clippy::too_many_arguments)]
 fn send_email_blocking(
     smtp_host: &str,
     smtp_port: u16,

@@ -37,8 +37,11 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
     },
-    /// Manage configuration
-    Config,
+    /// Manage and validate configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Stop the running daemon or trigger emergency stop
     Stop,
     /// Show current status
@@ -52,6 +55,18 @@ enum Commands {
         #[command(subcommand)]
         action: SkillAction,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Validate config.toml and show all semantic errors
+    Check {
+        /// Path to config file (default: config.toml)
+        #[arg(short, long, default_value = "config.toml")]
+        file: String,
+    },
+    /// Show the current config schema version
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -96,9 +111,17 @@ async fn main() -> anyhow::Result<()> {
             run_chat(provider.as_deref(), model.as_deref()).await?;
         }
 
-        Commands::Config => {
-            info!("Configuration management coming soon. Edit config.toml directly.");
-        }
+        Commands::Config { action } => match action {
+            ConfigAction::Check { file } => {
+                cmd_config_check(file);
+            }
+            ConfigAction::Version => {
+                println!(
+                    "AdaClaw config schema version: {} (current)",
+                    config::migration::CURRENT_VERSION
+                );
+            }
+        },
 
         Commands::Stop => {
             info!("Sending stop signal... (not yet implemented)");
@@ -222,4 +245,41 @@ async fn run_chat(
 
     println!("Goodbye.");
     Ok(())
+}
+
+/// `adaclaw config check [--file <path>]`
+///
+/// Loads the config file, runs migration, then runs all semantic validators.
+/// Prints every error with field paths and exits 1 if any are found.
+fn cmd_config_check(file: &str) {
+    // ── Step 1: load + parse + migrate ────────────────────────────────────────
+    let cfg = match config::Config::load_from_file(file) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("✗ Failed to load '{file}':\n  {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let version = cfg.config_version;
+    let current = config::migration::CURRENT_VERSION;
+
+    // ── Step 2: semantic validation ────────────────────────────────────────────
+    let errors = cfg.validate();
+
+    if errors.is_empty() {
+        println!(
+            "✓ Config '{file}' is valid  (schema version {version}/{current})"
+        );
+    } else {
+        eprintln!(
+            "✗ Config '{file}' has {} error(s)  (schema version {version}/{current}):\n",
+            errors.len()
+        );
+        for (i, e) in errors.iter().enumerate() {
+            eprintln!("  {}. {}", i + 1, e);
+        }
+        eprintln!();
+        std::process::exit(1);
+    }
 }

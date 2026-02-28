@@ -2,7 +2,13 @@
 # Copy to config.toml and edit: cp config.example.toml config.toml
 #
 # Quick start: run `adaclaw onboard` to generate this file interactively.
+# Validate:    run `adaclaw config check` to verify all fields are correct.
 # Docs: https://github.com/worldflat21-lang/AdaClaw
+
+# ── Schema version ─────────────────────────────────────────────────────────────
+# Do not remove — used by `adaclaw config check` to detect stale configs.
+# Bump this when you follow AdaClaw upgrade instructions.
+config_version = 1
 
 # ── Providers ──────────────────────────────────────────────────────────────────
 # At least one provider must be configured (or set API key env var).

@@ -177,14 +177,38 @@ impl AgentEngine {
         self.push_history(MessageEntry::new("user", input, &current_topic));
 
         for iteration in 0..max_iter {
-            crate::agents::compact::trim_history(&mut messages);
+            // Auto-compact history: rolling LLM summarisation when above threshold
+            // (ROLLING_THRESHOLD=30), then hard-trim as safety net (HARD_MAX=60).
+            // Falls back to hard-trim gracefully if the LLM summary call fails.
+            // Reference: picoclaw maybeSummarize + zeroclaw auto_compact_history.
+            if let Err(e) = crate::agents::compact::auto_compact_history(&mut messages, provider, model).await {
+                warn!(error = %e, "auto_compact_history failed, applying hard trim");
+                crate::agents::compact::trim_history(&mut messages);
+            }
 
-            let req = ChatRequest {
-                messages: &messages,
-                system,
-            };
-
-            let response = provider.chat(req, model, temp).await?;
+            // Call LLM with retry on context-window errors (max 2 retries).
+            // On each retry, force_compress_messages() drops the oldest 50% of the
+            // conversation to recover space — matching picoclaw's forceCompression.
+            let mut context_retry = 0u8;
+            let response = loop {
+                let req = ChatRequest {
+                    messages: &messages,
+                    system,
+                };
+                match provider.chat(req, model, temp).await {
+                    Ok(resp) => break Ok(resp),
+                    Err(e) if detect_context_window_error(&e) && context_retry < 2 => {
+                        warn!(
+                            error = %e,
+                            retry = context_retry + 1,
+                            "Context window error detected — force-compressing history and retrying"
+                        );
+                        force_compress_messages(&mut messages);
+                        context_retry += 1;
+                    }
+                    Err(e) => break Err(e),
+                }
+            }?;
             debug!(
                 iteration,
                 response_len = response.content.len(),
@@ -457,6 +481,74 @@ fn truncate(s: &str, max_chars: usize) -> &str {
     &s[..idx]
 }
 
+/// Detect whether an LLM error is due to context-window / token-limit overflow.
+///
+/// Covers error messages from OpenAI, Anthropic, Ollama, Groq, DeepSeek, and
+/// other OpenAI-compatible endpoints.  The check is case-insensitive so it
+/// handles variations in capitalisation across providers.
+///
+/// Reference: picoclaw `runLLMIteration` isContextError check (loop.go).
+pub(crate) fn detect_context_window_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    // OpenAI / compatible
+    msg.contains("context_length_exceeded")
+        || msg.contains("context window")
+        || msg.contains("maximum context")
+        || msg.contains("request_too_large")
+        || msg.contains("request too large")
+        // Anthropic
+        || msg.contains("input is too long")
+        || msg.contains("prompt is too long")
+        // Generic token wording
+        || (msg.contains("token") && (msg.contains("exceed") || msg.contains("limit")))
+        || (msg.contains("context") && msg.contains("length"))
+        // Zhipu/GLM ("InvalidParameter: Total tokens … exceed max")
+        || msg.contains("invalidparameter")
+        // Ollama
+        || msg.contains("context length")
+        // Groq
+        || msg.contains("exceeds the model's context length")
+}
+
+/// Emergency compression: drop the **oldest 50%** of non-system conversation
+/// messages.  Designed for use when the LLM returns a context-window error and
+/// `auto_compact_history` (which requires a working LLM) has already been
+/// tried.  This is a deterministic, zero-LLM-call fallback.
+///
+/// - Preserves `messages[0]` if it is the system prompt (role == "system").
+/// - Preserves the most recent message (the current user turn or last tool result).
+/// - Drops the **oldest half** of the middle conversation.
+///
+/// Reference: picoclaw `forceCompression` in loop.go.
+pub(crate) fn force_compress_messages(messages: &mut Vec<ChatMessage>) {
+    if messages.len() <= 4 {
+        return;
+    }
+
+    let has_system = messages.first().map(|m| m.role == "system").unwrap_or(false);
+    let conv_start = if has_system { 1 } else { 0 };
+
+    // Conversation slice = everything except the system prompt and the last message.
+    let conv_len = messages.len().saturating_sub(conv_start + 1);
+    if conv_len == 0 {
+        return;
+    }
+
+    let drop_count = conv_len / 2;
+    if drop_count == 0 {
+        return;
+    }
+
+    // Drop the oldest half of the conversation window.
+    messages.drain(conv_start..conv_start + drop_count);
+
+    debug!(
+        dropped = drop_count,
+        remaining = messages.len(),
+        "force_compress_messages: dropped oldest half of conversation to recover context space"
+    );
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -518,5 +610,315 @@ mod tests {
         let visible = engine.visible_messages();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].content, "visible msg");
+    }
+
+    // ── detect_context_window_error tests ─────────────────────────────────────
+
+    #[test]
+    fn test_detect_context_window_error_openai_patterns() {
+        // OpenAI canonical code
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("context_length_exceeded: your prompt is too long")
+        ));
+        // Common plain-English variant
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("This model's context window is 4096 tokens")
+        ));
+        // Maximum context phrasing
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("maximum context length exceeded")
+        ));
+        // Request-too-large code
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("request_too_large")
+        ));
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("request too large for model")
+        ));
+    }
+
+    #[test]
+    fn test_detect_context_window_error_anthropic_patterns() {
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("input is too long for this model")
+        ));
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("prompt is too long for claude")
+        ));
+    }
+
+    #[test]
+    fn test_detect_context_window_error_generic_token_patterns() {
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("token limit exceeded in this request")
+        ));
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("1234 tokens exceed the context length")
+        ));
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("context length 4096 exceeded")
+        ));
+        // Groq-style
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("request exceeds the model's context length")
+        ));
+    }
+
+    #[test]
+    fn test_detect_context_window_error_zhipu_pattern() {
+        // GLM / Zhipu error format from picoclaw test suite
+        assert!(detect_context_window_error(
+            &anyhow::anyhow!("InvalidParameter: Total tokens of image and text exceed max message tokens")
+        ));
+    }
+
+    #[test]
+    fn test_detect_context_window_error_false_positives() {
+        // Normal errors must NOT be mistaken for context errors
+        assert!(!detect_context_window_error(
+            &anyhow::anyhow!("Authentication failed: invalid API key")
+        ));
+        assert!(!detect_context_window_error(
+            &anyhow::anyhow!("rate limit exceeded: 429 too many requests")
+        ));
+        assert!(!detect_context_window_error(
+            &anyhow::anyhow!("network timeout after 30s")
+        ));
+        assert!(!detect_context_window_error(
+            &anyhow::anyhow!("internal server error 500")
+        ));
+    }
+
+    // ── force_compress_messages tests ─────────────────────────────────────────
+
+    fn make_messages(n: usize, with_system: bool) -> Vec<ChatMessage> {
+        let mut msgs = Vec::new();
+        if with_system {
+            msgs.push(ChatMessage {
+                role: "system".to_string(),
+                content: "System prompt".to_string(),
+            });
+        }
+        for i in 0..n {
+            msgs.push(ChatMessage {
+                role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                content: format!("message {}", i),
+            });
+        }
+        msgs
+    }
+
+    #[test]
+    fn test_force_compress_noop_when_short() {
+        let mut msgs = make_messages(3, true);
+        let original_len = msgs.len(); // system + 3 = 4
+        force_compress_messages(&mut msgs);
+        assert_eq!(
+            msgs.len(),
+            original_len,
+            "should not compress when len <= 4"
+        );
+    }
+
+    #[test]
+    fn test_force_compress_drops_oldest_half_with_system() {
+        // system + 10 conversation messages = 11 total
+        let mut msgs = make_messages(10, true);
+        let before = msgs.len();
+        force_compress_messages(&mut msgs);
+
+        // conv_len = 11 - 1(sys) - 1(last) = 9 → drop_count = 4
+        let expected_dropped = (before - 1 - 1) / 2;
+        assert_eq!(
+            msgs.len(),
+            before - expected_dropped,
+            "should drop oldest half of conversation"
+        );
+    }
+
+    #[test]
+    fn test_force_compress_preserves_system_prompt() {
+        let mut msgs = make_messages(10, true);
+        force_compress_messages(&mut msgs);
+        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[0].content, "System prompt");
+    }
+
+    #[test]
+    fn test_force_compress_preserves_last_message() {
+        let mut msgs = make_messages(10, true);
+        let last_content = msgs.last().unwrap().content.clone();
+        force_compress_messages(&mut msgs);
+        assert_eq!(
+            msgs.last().unwrap().content,
+            last_content,
+            "most recent message must be preserved after compression"
+        );
+    }
+
+    #[test]
+    fn test_force_compress_without_system_prompt() {
+        // 10 messages without a system prompt
+        let mut msgs = make_messages(10, false);
+        let before = msgs.len();
+        let last_content = msgs.last().unwrap().content.clone();
+        force_compress_messages(&mut msgs);
+
+        // conv_len = 10 - 0(sys) - 1(last) = 9 → drop_count = 4
+        let expected_dropped = (before - 1) / 2;
+        assert_eq!(msgs.len(), before - expected_dropped);
+        assert_eq!(
+            msgs.last().unwrap().content,
+            last_content,
+            "last message preserved even without system prompt"
+        );
+    }
+
+    #[test]
+    fn test_force_compress_idempotent_on_tiny_history() {
+        // Exactly 4 messages (threshold boundary) — should be a no-op
+        let mut msgs = make_messages(3, true); // system + 3 = 4
+        let before = msgs.len();
+        force_compress_messages(&mut msgs);
+        assert_eq!(msgs.len(), before, "len==4 is the no-op boundary");
+    }
+
+    // ── shell output truncation constant ──────────────────────────────────────
+
+    #[test]
+    fn test_max_output_chars_constant() {
+        // Verify the constant is exported and matches our agreed value from
+        // the comparison with picoclaw (10 000 chars, shell.go maxLen).
+        assert_eq!(
+            adaclaw_tools::shell::MAX_OUTPUT_CHARS,
+            10_000,
+            "ShellTool output ceiling must match picoclaw's 10 000-char limit"
+        );
+    }
+
+    // ── truncate() helper (used for memory indexing snippets) ─────────────────
+
+    #[test]
+    fn test_truncate_helper_noop_when_within_limit() {
+        // Strings shorter than the limit must be returned unchanged (same slice).
+        assert_eq!(truncate("hello", 100), "hello");
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_helper_ascii_exact_limit() {
+        // `truncate` uses byte length as the limit.  For ASCII, bytes == chars.
+        let s = "abcdefghij"; // 10 bytes
+        assert_eq!(truncate(s, 10), "abcdefghij", "at-limit ASCII must be unchanged");
+        assert_eq!(truncate(s, 5), "abcde", "over-limit ASCII truncated at byte 5");
+    }
+
+    #[test]
+    fn test_truncate_helper_multibyte_does_not_panic() {
+        // Each CJK char is 3 bytes.  truncate() must not panic and must return
+        // valid UTF-8 even when the byte limit falls in the middle of a character.
+        let s = "中文Rust"; // 中=3B, 文=3B, R=1, u=1, s=1, t=1 → 10 bytes total
+        // Limit of 4 bytes falls mid-character (中=0-2, 文=3-5) — must walk back
+        let result = truncate(s, 4);
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok(), "result must be valid UTF-8");
+        // The result must be a prefix of the original string
+        assert!(s.starts_with(result), "result must be a valid prefix of the original");
+    }
+
+    #[test]
+    fn test_truncate_helper_multibyte_char_boundary_alignment() {
+        // With limit=3, the function starts at byte 3 which IS a char boundary
+        // (end of '中').  So the result must be "中".
+        let s = "中文hello";
+        let result = truncate(s, 3);
+        assert_eq!(result, "中", "byte limit 3 = end of first CJK char");
+    }
+
+    // ── parallel tool execution — Err isolation ───────────────────────────────
+
+    /// Documents the key safety property of `join_all` used in the tool execution
+    /// loop: `join_all` always collects **all** results and never short-circuits
+    /// when one future resolves to `Err`.  This means a tool returning `Err` does
+    /// NOT prevent other concurrently-running tools from completing.
+    ///
+    /// The engine's result-processing loop then converts each `Err` to an error
+    /// message (role="tool") so the LLM can see what failed and continue.
+    ///
+    /// ⚠️  Panic isolation caveat: a `panic!` inside a future passed to `join_all`
+    /// WILL propagate through the `join_all` await and bring down the current
+    /// agent turn.  Full panic isolation would require `tokio::task::spawn` (which
+    /// captures panics as `JoinError::is_panic()`).  Tool authors should not panic
+    /// and should instead return `Err(...)`.
+    #[tokio::test]
+    async fn test_join_all_collects_all_results_on_partial_failure() {
+        use futures_util::future::join_all;
+
+        // Simulate 3 concurrent tool executions: A succeeds, B fails, C succeeds.
+        // join_all must return all 3 results (not short-circuit after B fails).
+        let futures: Vec<_> = vec![
+            futures_util::future::ready(Ok::<&str, &str>("tool_a: success")),
+            futures_util::future::ready(Err::<&str, &str>("tool_b: connection refused")),
+            futures_util::future::ready(Ok::<&str, &str>("tool_c: success")),
+        ];
+
+        let results = join_all(futures).await;
+
+        assert_eq!(results.len(), 3, "join_all must collect ALL results without short-circuiting");
+        assert!(results[0].is_ok(),  "tool_a must succeed");
+        assert!(results[1].is_err(), "tool_b must fail");
+        assert!(results[2].is_ok(),  "tool_c must succeed even though tool_b failed");
+        assert_eq!(results[0].unwrap(), "tool_a: success");
+        assert_eq!(results[2].unwrap(), "tool_c: success");
+    }
+
+    #[tokio::test]
+    async fn test_join_all_all_failing_tools_still_collects_all() {
+        use futures_util::future::join_all;
+
+        // When ALL tools fail, join_all must still return all errors
+        // (not just the first one) so the engine can report them all.
+        let futures: Vec<_> = vec![
+            futures_util::future::ready(Err::<&str, &str>("tool_a: timeout")),
+            futures_util::future::ready(Err::<&str, &str>("tool_b: permission denied")),
+        ];
+
+        let results = join_all(futures).await;
+
+        assert_eq!(results.len(), 2, "all failure results must be collected");
+        assert!(results.iter().all(|r| r.is_err()), "all must be Err");
+        assert_eq!(results[0].unwrap_err(), "tool_a: timeout");
+        assert_eq!(results[1].unwrap_err(), "tool_b: permission denied");
+    }
+
+    // ── dedup logic ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_call_dedup_key_is_full_json() {
+        // The dedup key is the full JSON string of the tool call object.
+        // Two calls with the same name but different arguments must NOT be deduped.
+        use serde_json::json;
+
+        let call_a = json!({"name": "shell", "arguments": {"command": "ls"}});
+        let call_b = json!({"name": "shell", "arguments": {"command": "pwd"}});
+        let call_c = json!({"name": "shell", "arguments": {"command": "ls"}}); // duplicate of a
+
+        let mut dedup = std::collections::HashSet::<String>::new();
+        assert!(dedup.insert(call_a.to_string()), "call_a must be inserted (first occurrence)");
+        assert!(dedup.insert(call_b.to_string()), "call_b must be inserted (different args)");
+        assert!(!dedup.insert(call_c.to_string()), "call_c must be rejected (exact duplicate of call_a)");
+        assert_eq!(dedup.len(), 2, "only 2 unique calls");
+    }
+
+    #[test]
+    fn test_tool_call_dedup_same_name_different_tools_not_deduped() {
+        // Two calls to different tools with identical-looking args must both be kept.
+        use serde_json::json;
+
+        let call_a = json!({"name": "file_read",  "arguments": {"path": "README.md"}});
+        let call_b = json!({"name": "file_write", "arguments": {"path": "README.md"}});
+
+        let mut dedup = std::collections::HashSet::<String>::new();
+        assert!(dedup.insert(call_a.to_string()));
+        assert!(dedup.insert(call_b.to_string()), "different tool names → not a duplicate");
     }
 }

@@ -25,6 +25,11 @@ use tracing::{debug, error, info, warn};
 /// Telegram 消息最大字符数（Unicode code points，非字节数）
 const TG_MAX_MESSAGE_CHARS: usize = 4096;
 
+/// Approval callback data prefix — Approve button
+const APPROVAL_CALLBACK_APPROVE_PREFIX: &str = "acadapr:yes:";
+/// Approval callback data prefix — Deny button
+const APPROVAL_CALLBACK_DENY_PREFIX: &str = "acadapr:no:";
+
 // ── Telegram API 响应结构 ─────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +44,26 @@ struct TgResponse<T> {
 struct TgUpdate {
     update_id: i64,
     message: Option<TgMessage>,
+    callback_query: Option<TgCallbackQuery>,
+}
+
+/// Telegram callback_query — sent when the user presses an inline keyboard button.
+#[derive(Debug, Deserialize, Clone)]
+struct TgCallbackQuery {
+    /// Callback query ID (needed for `answerCallbackQuery`).
+    id: String,
+    /// The user who pressed the button.
+    from: TgUser,
+    /// The message the inline keyboard was attached to (if still accessible).
+    message: Option<TgCallbackMessage>,
+    /// The `callback_data` value on the pressed button.
+    data: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct TgCallbackMessage {
+    message_id: i64,
+    chat: TgChat,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -229,7 +254,7 @@ impl TelegramChannel {
             let body = json!({
                 "offset": offset,
                 "timeout": 0,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             });
 
             match self.client.post(&url).json(&body).send().await {
@@ -292,7 +317,7 @@ impl TelegramChannel {
                 "offset": offset,
                 "timeout": 30,
                 "limit": 100,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             }))
             .send()
             .await
@@ -410,18 +435,223 @@ impl TelegramChannel {
         text.to_lowercase().contains(&mention.to_lowercase())
     }
 
-    /// 从文本中移除 @botname 提及
+    /// 从文本中移除 @botname 提及，并折叠提及周围多余的空格。
+    ///
+    /// 例如："hi @MyBot status" → "hi status"（不留双空格）
     fn strip_bot_mention(text: &str, bot_username: &str) -> String {
         let mention = format!("@{}", bot_username);
         let re = Regex::new(&format!("(?i){}\\b", regex::escape(&mention))).unwrap_or_else(|_| {
             Regex::new("NOMATCH_IMPOSSIBLE").unwrap()
         });
-        re.replace_all(text, "").trim().to_string()
+        let stripped = re.replace_all(text, "");
+        // Collapse sequences of spaces introduced by removing the mention.
+        // We only collapse horizontal spaces (not newlines) to preserve formatting.
+        let space_re =
+            Regex::new(r" {2,}").unwrap_or_else(|_| Regex::new("NOMATCH_IMPOSSIBLE").unwrap());
+        space_re
+            .replace_all(stripped.as_ref(), " ")
+            .trim()
+            .to_string()
+    }
+
+    // ── Approval Inline Keyboard ──────────────────────────────────────────────
+
+    /// Send an approval prompt with ✅ Approve / ❌ Deny inline keyboard buttons.
+    ///
+    /// The callback data is `"acadapr:yes:{request_id}"` and `"acadapr:no:{request_id}"`.
+    /// When the user presses a button, `process_callback_query()` converts it to a
+    /// `/approve-allow {request_id}` or `/approve-deny {request_id}` inbound message
+    /// that flows through the bus and is handled by the agent/dispatch layer.
+    pub async fn send_approval_prompt_msg(
+        &self,
+        chat_id: i64,
+        request_id: &str,
+        tool_name: &str,
+        args_preview: &str,
+    ) -> Result<()> {
+        let safe_tool = html_escape(tool_name);
+        let safe_args = html_escape(&args_preview.chars().take(200).collect::<String>());
+        let safe_id = html_escape(request_id);
+
+        let text = format!(
+            "🔒 <b>Tool approval required</b>\n\n\
+             Tool: <code>{safe_tool}</code>\n\
+             Args: <code>{safe_args}</code>\n\
+             Request ID: <code>{safe_id}</code>\n\n\
+             ⏱ This request expires in 30 minutes."
+        );
+
+        let params = json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {
+                        "text": "✅ Approve",
+                        "callback_data": format!("{}{}", APPROVAL_CALLBACK_APPROVE_PREFIX, request_id)
+                    },
+                    {
+                        "text": "❌ Deny",
+                        "callback_data": format!("{}{}", APPROVAL_CALLBACK_DENY_PREFIX, request_id)
+                    }
+                ]]
+            }
+        });
+
+        self.call_api::<TgSentMessage>("sendMessage", params).await?;
+        Ok(())
+    }
+
+    /// Handle a Telegram callback_query (inline keyboard button press).
+    ///
+    /// - Acknowledges the button press with `answerCallbackQuery` (shows a toast).
+    /// - Clears the inline keyboard from the original message.
+    /// - If the data matches an approval prefix, injects an `/approve-allow` or
+    ///   `/approve-deny` inbound message into the bus for the agent to handle.
+    async fn process_callback_query(&self, callback: &TgCallbackQuery, bus: &Arc<dyn MessageBus>) {
+        let data = match &callback.data {
+            Some(d) => d.as_str(),
+            None => {
+                self.answer_callback_query_nonblocking(callback.id.clone(), "");
+                return;
+            }
+        };
+
+        // Parse approval callback data
+        let (command, request_id) = if let Some(rid) = data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX) {
+            let rid = rid.trim();
+            if rid.is_empty() {
+                self.answer_callback_query_nonblocking(callback.id.clone(), "⚠️ Invalid request");
+                return;
+            }
+            (
+                format!("/approve-allow {}", rid),
+                rid.to_string(),
+            )
+        } else if let Some(rid) = data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX) {
+            let rid = rid.trim();
+            if rid.is_empty() {
+                self.answer_callback_query_nonblocking(callback.id.clone(), "⚠️ Invalid request");
+                return;
+            }
+            (
+                format!("/approve-deny {}", rid),
+                rid.to_string(),
+            )
+        } else {
+            // Unknown callback — just acknowledge
+            self.answer_callback_query_nonblocking(callback.id.clone(), "");
+            return;
+        };
+
+        // Acknowledge the button press (shows a small toast on Telegram)
+        let toast = if command.starts_with("/approve-allow") {
+            "✅ Approval granted"
+        } else {
+            "❌ Request denied"
+        };
+        self.answer_callback_query_nonblocking(callback.id.clone(), toast);
+
+        // Clear the inline keyboard from the original message so the buttons disappear
+        if let Some(cb_msg) = &callback.message {
+            self.clear_inline_keyboard_nonblocking(cb_msg.chat.id, cb_msg.message_id);
+        }
+
+        // Extract sender info
+        let user = &callback.from;
+        let sender_id = if let Some(uname) = &user.username {
+            format!("{}|{}", user.id, uname)
+        } else {
+            user.id.to_string()
+        };
+        let sender_name = user.first_name.clone();
+
+        // Determine chat_id for the reply target
+        let chat_id_str = callback
+            .message
+            .as_ref()
+            .map(|m| m.chat.id.to_string())
+            .unwrap_or_else(|| user.id.to_string());
+
+        // Check sender is in allowlist
+        let allowed = self.base.is_allowed(&sender_id);
+        if !allowed {
+            warn!(
+                sender_id = %sender_id,
+                request_id = %request_id,
+                "Approval callback from unauthorized sender ignored"
+            );
+            return;
+        }
+
+        debug!(
+            sender_id = %sender_id,
+            request_id = %request_id,
+            command = %command,
+            "Approval callback processed"
+        );
+
+        // Build metadata
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "approval_request_id".to_string(),
+            Value::String(request_id.clone()),
+        );
+        metadata.insert("is_approval_callback".to_string(), Value::Bool(true));
+
+        // Inject the approval command into the bus as a regular inbound message
+        self.base
+            .handle_message(bus, &sender_id, &sender_name, &chat_id_str, &command, metadata)
+            .await;
+    }
+
+    /// Send a non-blocking `answerCallbackQuery` to acknowledge a button press.
+    /// This shows a small toast notification on the user's Telegram client.
+    fn answer_callback_query_nonblocking(&self, callback_query_id: String, text: &str) {
+        let client = self.client.clone();
+        let url = self.api_url("answerCallbackQuery");
+        let text = text.to_string();
+        tokio::spawn(async move {
+            let body = json!({
+                "callback_query_id": callback_query_id,
+                "text": text,
+                "show_alert": false,
+            });
+            if let Err(e) = client.post(&url).json(&body).send().await {
+                debug!("answerCallbackQuery failed (non-blocking): {}", e);
+            }
+        });
+    }
+
+    /// Remove the inline keyboard from a message (non-blocking).
+    /// Called after the user presses Approve/Deny so the buttons disappear.
+    fn clear_inline_keyboard_nonblocking(&self, chat_id: i64, message_id: i64) {
+        let client = self.client.clone();
+        let url = self.api_url("editMessageReplyMarkup");
+        tokio::spawn(async move {
+            let body = json!({
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reply_markup": {
+                    "inline_keyboard": []
+                }
+            });
+            if let Err(e) = client.post(&url).json(&body).send().await {
+                debug!("clearInlineKeyboard failed (non-blocking): {}", e);
+            }
+        });
     }
 
     // ── 消息处理 ──────────────────────────────────────────────────────────────
 
     async fn process_update(&self, update: &TgUpdate, bus: &Arc<dyn MessageBus>) {
+        // ── Route callback_query (inline keyboard button presses) ─────────────
+        if let Some(callback) = &update.callback_query {
+            self.process_callback_query(callback, bus).await;
+            return;
+        }
+
         let msg = match &update.message {
             Some(m) => m,
             None => return,
@@ -758,6 +988,39 @@ impl Channel for TelegramChannel {
         info!("Telegram channel stop requested");
         Ok(())
     }
+
+    /// Send an approval prompt with ✅ Approve / ❌ Deny inline keyboard buttons.
+    ///
+    /// Overrides the default no-op from the `Channel` trait.
+    /// Parses `session_id` as a Telegram `chat_id` (i64) and calls
+    /// `send_approval_prompt_msg()`.
+    async fn send_approval_prompt(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        tool_name: &str,
+        args_preview: &str,
+    ) -> Result<()> {
+        let chat_id: i64 = session_id
+            .parse()
+            .map_err(|_| anyhow!("Invalid Telegram chat_id for approval prompt: '{}'", session_id))?;
+        self.send_approval_prompt_msg(chat_id, request_id, tool_name, args_preview)
+            .await
+    }
+
+    fn supports_approval_prompts(&self) -> bool {
+        true
+    }
+}
+
+// ── HTML 辅助 ─────────────────────────────────────────────────────────────────
+
+/// Escape special HTML characters for safe use in Telegram HTML parse_mode.
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 // ── Markdown → Telegram HTML 转换 ─────────────────────────────────────────────
@@ -1031,5 +1294,98 @@ mod tests {
         let text2 = "a".repeat(4097);
         let chunks2 = split_message(&text2, TG_MAX_MESSAGE_CHARS);
         assert!(chunks2.len() > 1);
+    }
+
+    // ── Approval callback parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn test_approval_callback_approve_prefix_parses_request_id() {
+        let data = format!("{}apr-1a2b3c", APPROVAL_CALLBACK_APPROVE_PREFIX);
+        assert!(data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).is_some());
+        let rid = data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).unwrap();
+        assert_eq!(rid, "apr-1a2b3c");
+    }
+
+    #[test]
+    fn test_approval_callback_deny_prefix_parses_request_id() {
+        let data = format!("{}apr-dead00", APPROVAL_CALLBACK_DENY_PREFIX);
+        let rid = data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX).unwrap();
+        assert_eq!(rid, "apr-dead00");
+    }
+
+    #[test]
+    fn test_approval_callback_approve_prefix_constant() {
+        assert_eq!(APPROVAL_CALLBACK_APPROVE_PREFIX, "acadapr:yes:");
+    }
+
+    #[test]
+    fn test_approval_callback_deny_prefix_constant() {
+        assert_eq!(APPROVAL_CALLBACK_DENY_PREFIX, "acadapr:no:");
+    }
+
+    #[test]
+    fn test_approval_callback_data_distinguishes_approve_deny() {
+        let approve_data = format!("{}apr-aaa", APPROVAL_CALLBACK_APPROVE_PREFIX);
+        let deny_data = format!("{}apr-aaa", APPROVAL_CALLBACK_DENY_PREFIX);
+
+        assert!(approve_data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).is_some());
+        assert!(approve_data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX).is_none());
+
+        assert!(deny_data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX).is_some());
+        assert!(deny_data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).is_none());
+    }
+
+    #[test]
+    fn test_approval_callback_empty_request_id_rejected() {
+        // Empty request_id after prefix — should NOT be treated as valid
+        let approve_data = APPROVAL_CALLBACK_APPROVE_PREFIX;  // no request_id
+        let rid = approve_data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+            .unwrap_or("")
+            .trim();
+        assert!(rid.is_empty(), "Empty request_id should be treated as invalid");
+    }
+
+    #[test]
+    fn test_approval_callback_whitespace_trimmed_request_id_rejected() {
+        let data = format!("{}   ", APPROVAL_CALLBACK_APPROVE_PREFIX);
+        let rid = data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+            .unwrap_or("")
+            .trim();
+        assert!(rid.is_empty(), "Whitespace-only request_id should be treated as invalid");
+    }
+
+    #[test]
+    fn test_html_escape_basic() {
+        assert_eq!(html_escape("<b>"), "&lt;b&gt;");
+        assert_eq!(html_escape("a & b"), "a &amp; b");
+        assert_eq!(html_escape("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(html_escape("no special chars"), "no special chars");
+    }
+
+    #[test]
+    fn test_html_escape_xss_prevention() {
+        let malicious = "<script>alert('xss')</script>";
+        let escaped = html_escape(malicious);
+        assert!(!escaped.contains('<'));
+        assert!(!escaped.contains('>'));
+        assert!(escaped.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn test_approval_prompt_callback_data_max_length() {
+        // Telegram callback_data is limited to 64 bytes
+        let request_id = "apr-12345";  // 9 chars
+        let approve_data = format!("{}{}", APPROVAL_CALLBACK_APPROVE_PREFIX, request_id);
+        assert!(
+            approve_data.len() <= 64,
+            "callback_data must be <= 64 bytes, got {}",
+            approve_data.len()
+        );
+        let deny_data = format!("{}{}", APPROVAL_CALLBACK_DENY_PREFIX, request_id);
+        assert!(
+            deny_data.len() <= 64,
+            "callback_data must be <= 64 bytes, got {}",
+            deny_data.len()
+        );
     }
 }

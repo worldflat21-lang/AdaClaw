@@ -70,7 +70,7 @@ pub fn cmd_list() {
     }
 
     println!("Installed skills ({}):", dirs.len());
-    println!("{:<20} {:<12} {}", "Name", "Version", "Description");
+    println!("{:<20} {:<12} Description", "Name", "Version");
     println!("{}", "-".repeat(60));
 
     for entry in dirs {

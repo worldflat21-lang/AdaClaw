@@ -227,45 +227,250 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_rolling_compact_noop_when_small() {
-        // Use a NopProvider that panics if called — compact shouldn't touch a short history.
-        struct PanicProvider;
-        #[async_trait::async_trait]
-        impl adaclaw_core::provider::Provider for PanicProvider {
-            fn name(&self) -> &str { "panic" }
-            fn capabilities(&self) -> adaclaw_core::provider::ProviderCapabilities {
-                adaclaw_core::provider::ProviderCapabilities {
-                    native_tool_calling: false,
-                    vision: false,
-                    streaming: false,
-                }
-            }
-            async fn chat(
-                &self,
-                _req: adaclaw_core::provider::ChatRequest<'_>,
-                _model: &str,
-                _temp: f64,
-            ) -> anyhow::Result<adaclaw_core::provider::ChatResponse> {
-                panic!("should not be called")
-            }
-            async fn chat_with_system(
-                &self,
-                _system: Option<&str>,
-                _msg: &str,
-                _model: &str,
-                _temp: f64,
-            ) -> anyhow::Result<String> {
-                panic!("should not be called")
+    // ── Shared mock provider helpers ──────────────────────────────────────────
+
+    struct PanicProvider;
+    #[async_trait::async_trait]
+    impl adaclaw_core::provider::Provider for PanicProvider {
+        fn name(&self) -> &str {
+            "panic"
+        }
+        fn capabilities(&self) -> adaclaw_core::provider::ProviderCapabilities {
+            adaclaw_core::provider::ProviderCapabilities {
+                native_tool_calling: false,
+                vision: false,
+                streaming: false,
             }
         }
-
-        let mut h = make_history(ROLLING_THRESHOLD - 1);
-        let p = PanicProvider;
-        // Must not call provider
-        rolling_compact(&mut h, &p, "any-model").await.unwrap();
-        assert_eq!(h.len(), ROLLING_THRESHOLD - 1);
+        async fn chat(
+            &self,
+            _req: adaclaw_core::provider::ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<adaclaw_core::provider::ChatResponse> {
+            panic!("chat() should not be called in compact tests")
+        }
+        async fn chat_with_system(
+            &self,
+            _system: Option<&str>,
+            _msg: &str,
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            panic!("chat_with_system() should not be called")
+        }
     }
+
+    /// Provider that always succeeds and returns a fixed summary string.
+    struct SummaryProvider;
+    #[async_trait::async_trait]
+    impl adaclaw_core::provider::Provider for SummaryProvider {
+        fn name(&self) -> &str {
+            "summary"
+        }
+        fn capabilities(&self) -> adaclaw_core::provider::ProviderCapabilities {
+            adaclaw_core::provider::ProviderCapabilities {
+                native_tool_calling: false,
+                vision: false,
+                streaming: false,
+            }
+        }
+        async fn chat(
+            &self,
+            _req: adaclaw_core::provider::ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<adaclaw_core::provider::ChatResponse> {
+            panic!("chat() should not be called in compact tests")
+        }
+        async fn chat_with_system(
+            &self,
+            _system: Option<&str>,
+            _msg: &str,
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            Ok("Key facts: user asked about Rust ownership, assistant explained borrowing rules.".to_string())
+        }
+    }
+
+    /// Provider that always fails — simulates LLM unavailability.
+    struct FailProvider;
+    #[async_trait::async_trait]
+    impl adaclaw_core::provider::Provider for FailProvider {
+        fn name(&self) -> &str {
+            "fail"
+        }
+        fn capabilities(&self) -> adaclaw_core::provider::ProviderCapabilities {
+            adaclaw_core::provider::ProviderCapabilities {
+                native_tool_calling: false,
+                vision: false,
+                streaming: false,
+            }
+        }
+        async fn chat(
+            &self,
+            _req: adaclaw_core::provider::ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<adaclaw_core::provider::ChatResponse> {
+            panic!("chat() should not be called in compact tests")
+        }
+        async fn chat_with_system(
+            &self,
+            _system: Option<&str>,
+            _msg: &str,
+            _model: &str,
+            _temp: f64,
+        ) -> anyhow::Result<String> {
+            Err(anyhow::anyhow!("LLM service unavailable: connection refused"))
+        }
+    }
+
+    // ── rolling_compact: noop path ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_rolling_compact_noop_when_small() {
+        // PanicProvider must NOT be called — history is below ROLLING_THRESHOLD.
+        let mut h = make_history(ROLLING_THRESHOLD - 1);
+        rolling_compact(&mut h, &PanicProvider, "any-model").await.unwrap();
+        assert_eq!(h.len(), ROLLING_THRESHOLD - 1, "short history must be unchanged");
+    }
+
+    // ── rolling_compact: success path ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_rolling_compact_calls_llm_and_inserts_summary() {
+        // Verify that rolling_compact:
+        //   1. Calls the LLM with the old messages
+        //   2. Inserts the summary at index 1
+        //   3. Preserves history[0] (first message) and the ROLLING_KEEP recent tail
+        let mut h = make_history(ROLLING_THRESHOLD + 5);
+        let original_len = h.len();
+        let first_content = h[0].content.clone();
+        let last_content = h.last().unwrap().content.clone();
+
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4").await.unwrap();
+
+        assert!(
+            h.len() < original_len,
+            "compacted history must be shorter than original ({} vs {})",
+            h.len(),
+            original_len
+        );
+        assert_eq!(h[0].content, first_content, "first message must be preserved verbatim");
+        assert_eq!(
+            h.last().unwrap().content,
+            last_content,
+            "most recent message must be in the kept tail"
+        );
+        // Summary inserted at index 1
+        assert!(
+            h[1].content.starts_with("[Conversation summary]"),
+            "summary must be inserted at index 1; got: {:?}",
+            h[1].content
+        );
+        assert!(
+            h[1].content.contains("Rust ownership"),
+            "summary content must be from provider response"
+        );
+        // After compaction, recent tail = ROLLING_KEEP messages plus history[0] + summary
+        assert!(
+            h.len() <= ROLLING_KEEP + 2,
+            "post-compaction length must be <= ROLLING_KEEP + 2 (first + summary + tail); got {}",
+            h.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rolling_compact_result_stays_below_rolling_threshold() {
+        // After a successful compaction the history should drop below ROLLING_THRESHOLD
+        // so a second immediate call is a no-op (no infinite LLM-call loop).
+        let mut h = make_history(ROLLING_THRESHOLD + 5);
+
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4").await.unwrap();
+        let after_first = h.len();
+
+        // Second call must be a no-op (PanicProvider would panic if called).
+        rolling_compact(&mut h, &PanicProvider, "gpt-4").await.unwrap();
+
+        assert_eq!(
+            h.len(),
+            after_first,
+            "second call must be a no-op — history is still below ROLLING_THRESHOLD"
+        );
+    }
+
+    // ── rolling_compact: LLM failure → graceful hard-trim fallback ───────────
+
+    #[tokio::test]
+    async fn test_rolling_compact_llm_failure_falls_back_to_hard_trim() {
+        // When the LLM summarisation call fails, rolling_compact must NOT return Err
+        // (it catches the failure internally and applies hard trim as a safety net).
+        let mut h = make_history(ROLLING_THRESHOLD + 5);
+        let first_content = h[0].content.clone();
+        let last_content = h.last().unwrap().content.clone();
+
+        // Should complete without propagating the LLM error
+        rolling_compact(&mut h, &FailProvider, "model").await.unwrap();
+
+        // Hard trim was applied — history is within HARD_MAX_HISTORY
+        assert!(
+            h.len() <= HARD_MAX_HISTORY,
+            "hard trim must be applied after LLM failure; len={}", h.len()
+        );
+        assert_eq!(h[0].content, first_content, "first message must survive the fallback trim");
+        assert_eq!(
+            h.last().unwrap().content,
+            last_content,
+            "most recent message must survive the fallback trim"
+        );
+        // The history must not contain a "[Conversation summary]" entry (LLM failed)
+        let has_summary = h.iter().any(|m| m.content.starts_with("[Conversation summary]"));
+        assert!(!has_summary, "no summary must be inserted when LLM fails");
+    }
+
+    // ── auto_compact_history ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_auto_compact_history_noop_below_threshold() {
+        let mut h = make_history(ROLLING_THRESHOLD - 1);
+        // PanicProvider must not be called
+        auto_compact_history(&mut h, &PanicProvider, "model").await.unwrap();
+        assert_eq!(h.len(), ROLLING_THRESHOLD - 1, "auto_compact must be a no-op when below threshold");
+    }
+
+    #[tokio::test]
+    async fn test_auto_compact_history_compacts_and_applies_safety_net() {
+        // Verify the two-stage flow:
+        //   1. rolling_compact reduces history (via SummaryProvider)
+        //   2. safety net trim fires if somehow still over HARD_MAX_HISTORY
+        //      (not realistic after rolling_compact, but the net must not break things)
+        let mut h = make_history(ROLLING_THRESHOLD + 20);
+        let first_content = h[0].content.clone();
+        let last_content = h.last().unwrap().content.clone();
+
+        auto_compact_history(&mut h, &SummaryProvider, "model").await.unwrap();
+
+        assert!(h.len() <= HARD_MAX_HISTORY, "must be within hard max after auto_compact");
+        assert_eq!(h[0].content, first_content, "first message preserved");
+        assert_eq!(h.last().unwrap().content, last_content, "last message preserved");
+    }
+
+    #[tokio::test]
+    async fn test_auto_compact_history_failure_still_within_bounds() {
+        // Even when LLM fails and rolling_compact falls back to trim, auto_compact_history
+        // must succeed (Ok) and leave history within HARD_MAX_HISTORY.
+        let mut h = make_history(ROLLING_THRESHOLD + 20);
+        auto_compact_history(&mut h, &FailProvider, "model").await.unwrap();
+        assert!(
+            h.len() <= HARD_MAX_HISTORY,
+            "history must be within hard max even after LLM failure; len={}",
+            h.len()
+        );
+    }
+
+    // ── hard trim edge cases ──────────────────────────────────────────────────
 
     #[test]
     fn test_hard_trim_safety_net() {
@@ -274,5 +479,14 @@ mod tests {
         // After hard trim: message[0] + HARD_KEEP_RECENT most recent
         assert!(h.len() <= HARD_MAX_HISTORY);
         assert_eq!(h[0].content, "message 0");
+    }
+
+    #[test]
+    fn test_hard_trim_at_exact_boundary() {
+        // Exactly HARD_MAX_HISTORY messages: trim should be a no-op.
+        let mut h = make_history(HARD_MAX_HISTORY);
+        let len_before = h.len();
+        trim_history(&mut h);
+        assert_eq!(h.len(), len_before, "trim at exact HARD_MAX_HISTORY must be a no-op");
     }
 }

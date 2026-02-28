@@ -33,6 +33,14 @@ pub struct Config {
     /// Tunnel configuration (Phase 7).
     #[serde(default)]
     pub tunnel: TunnelConfig,
+
+    /// Tools / MCP server configuration (Phase 10).
+    #[serde(default)]
+    pub tools: ToolsConfig,
+
+    /// Heartbeat / active task configuration (Phase 10).
+    #[serde(default)]
+    pub heartbeat: HeartbeatConfig,
 }
 
 impl Config {
@@ -516,6 +524,264 @@ impl Default for TunnelConfig {
             ngrok_token: None,
             ngrok_domain: None,
             tailscale_funnel: false,
+        }
+    }
+}
+
+// ── Phase 9：渠道扩展配置（WhatsApp / Email / Matrix）────────────────────────
+
+/// WhatsApp Business Cloud API 渠道配置
+///
+/// 对应 TOML 中 `[channels.whatsapp]` 块的所有字段的强类型视图。
+/// 实际从 `ChannelConfig` 读取（`token` / `webhook_secret` / `extra`）。
+///
+/// ```toml
+/// [channels.whatsapp]
+/// kind = "whatsapp"
+/// token = "EAA..."                  # Access Token
+/// webhook_secret = "..."            # App Secret（可选）
+/// allow_from = ["1234567890"]       # 手机号白名单
+///
+/// [channels.whatsapp.extra]
+/// phone_number_id = "12345678"
+/// verify_token = "my_verify_token"
+/// webhook_port = "9005"             # 独立端口模式（默认）
+/// # 或使用 gateway 模式（共享 HTTPS 端口，配合隧道）:
+/// # webhook_port 不填，在 server.rs 挂载 WhatsAppRouteState
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WhatsAppConfig {
+    /// Graph API Access Token
+    pub access_token: String,
+    /// Phone Number ID（Meta App Dashboard 中获取）
+    pub phone_number_id: String,
+    /// Webhook 验证令牌（自定义字符串）
+    pub verify_token: String,
+    /// App Secret，用于 X-Hub-Signature-256 验证（可选）
+    pub app_secret: Option<String>,
+    /// 允许的手机号白名单（空 = 放行所有）
+    #[serde(default)]
+    pub allowed_numbers: Vec<String>,
+    /// Webhook 端口（独立模式，默认 9005）
+    #[serde(default = "default_whatsapp_port")]
+    pub webhook_port: u16,
+}
+
+fn default_whatsapp_port() -> u16 {
+    9005
+}
+
+/// Email 渠道配置（IMAP 收信 + SMTP 发信）
+///
+/// ```toml
+/// [channels.email.extra]
+/// consent_granted = "true"          # 必须显式设置（安全门控）
+/// imap_host = "imap.gmail.com"
+/// imap_port = "993"
+/// imap_username = "you@gmail.com"
+/// imap_password = "app-password"
+/// smtp_host = "smtp.gmail.com"
+/// smtp_port = "587"                 # 587=STARTTLS, 465=TLS
+/// smtp_username = "you@gmail.com"
+/// smtp_password = "app-password"
+/// from_address = "Agent <you@gmail.com>"
+/// auto_reply_enabled = "true"
+/// poll_interval_secs = "60"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailConfig {
+    /// IMAP 服务器地址
+    pub imap_host: String,
+    /// IMAP 端口（默认 993，TLS）
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    /// IMAP 用户名
+    pub imap_username: String,
+    /// SMTP 服务器地址
+    pub smtp_host: String,
+    /// SMTP 端口（587=STARTTLS, 465=TLS）
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    /// 发件人地址（如 `"Agent <you@gmail.com>"`）
+    pub from_address: String,
+    /// 是否自动发送回复（false = 只读取）
+    #[serde(default = "default_true")]
+    pub auto_reply_enabled: bool,
+    /// 轮询间隔（秒，默认 60）
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+    /// 发件人白名单（空 = 接受所有）
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+    /// 安全门控（必须显式设为 true）
+    #[serde(default)]
+    pub consent_granted: bool,
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_poll_interval() -> u64 {
+    60
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            imap_host: String::new(),
+            imap_port: default_imap_port(),
+            imap_username: String::new(),
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            from_address: String::new(),
+            auto_reply_enabled: true,
+            poll_interval_secs: default_poll_interval(),
+            allow_from: Vec::new(),
+            consent_granted: false,
+        }
+    }
+}
+
+/// Matrix 渠道配置（Client-Server API）
+///
+/// 需要编译时开启 `feature = "matrix"`。
+///
+/// ```toml
+/// [channels.matrix]
+/// kind = "matrix"
+/// token = "syt_..."                 # access_token
+/// allow_from = ["@admin:matrix.org", "!roomid:matrix.org"]
+///
+/// [channels.matrix.extra]
+/// homeserver = "https://matrix.org"
+/// user_id = "@mybot:matrix.org"
+/// device_id = "ADACLAWDEV01"
+/// sync_timeout_ms = "30000"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatrixConfig {
+    /// Matrix homeserver URL（如 `https://matrix.org`）
+    pub homeserver: String,
+    /// Bot 用户 ID（如 `@bot:matrix.org`）
+    pub user_id: String,
+    /// 访问令牌（Matrix access_token）
+    pub access_token: String,
+    /// 设备 ID（稳定跨重启）
+    #[serde(default = "default_device_id")]
+    pub device_id: String,
+    /// 允许的用户 ID 或 room ID 白名单
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+    /// 长轮询超时毫秒数（默认 30000）
+    #[serde(default = "default_sync_timeout")]
+    pub sync_timeout_ms: u64,
+    /// 是否启用 E2EE（需要 `vodozemac` 扩展，当前版本不支持）
+    #[serde(default)]
+    pub e2ee_enabled: bool,
+}
+
+fn default_device_id() -> String {
+    "ADACLAW".to_string()
+}
+fn default_sync_timeout() -> u64 {
+    30_000
+}
+
+impl Default for MatrixConfig {
+    fn default() -> Self {
+        Self {
+            homeserver: String::new(),
+            user_id: String::new(),
+            access_token: String::new(),
+            device_id: default_device_id(),
+            allow_from: Vec::new(),
+            sync_timeout_ms: default_sync_timeout(),
+            e2ee_enabled: false,
+        }
+    }
+}
+
+// ── Phase 10：生态对接配置（MCP / Heartbeat / Groq）─────────────────────────
+
+/// 工具扩展配置（Phase 10 MCP）
+///
+/// ```toml
+/// [tools.mcp_servers.filesystem]
+/// command = "npx"
+/// args    = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+///
+/// [tools.mcp_servers.my-remote]
+/// url     = "https://example.com/mcp/"
+/// headers = { Authorization = "Bearer xxx" }
+/// tool_timeout = 30
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsConfig {
+    /// MCP Server 配置（key = server 逻辑名，value = Stdio 或 HTTP 配置）
+    #[serde(default)]
+    pub mcp_servers: std::collections::HashMap<String, McpServerConfig>,
+}
+
+/// MCP Server 配置（与 Claude Desktop / nanobot 格式兼容）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpServerConfig {
+    /// Stdio transport：启动本地进程
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Option<std::collections::HashMap<String, String>>,
+        #[serde(default)]
+        tool_timeout: Option<u64>,
+    },
+    /// HTTP transport：连接远程 MCP Server
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: Option<std::collections::HashMap<String, String>>,
+        #[serde(default)]
+        tool_timeout: Option<u64>,
+    },
+}
+
+/// Heartbeat（主动任务）配置（Phase 10）
+///
+/// ```toml
+/// [heartbeat]
+/// enabled = true
+/// interval_minutes = 30
+/// target_channel = "telegram"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatConfig {
+    /// 是否启用 Heartbeat（默认 false）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 执行间隔（分钟，默认 30，最小 5）
+    #[serde(default = "default_heartbeat_interval")]
+    pub interval_minutes: u64,
+    /// 结果回传渠道名（如 "telegram"，空 = 最近活跃渠道）
+    pub target_channel: Option<String>,
+    /// Heartbeat 文件路径（默认 workspace/HEARTBEAT.md）
+    pub heartbeat_file: Option<String>,
+}
+
+fn default_heartbeat_interval() -> u64 {
+    30
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_minutes: default_heartbeat_interval(),
+            target_channel: None,
+            heartbeat_file: None,
         }
     }
 }

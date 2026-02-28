@@ -1,4 +1,5 @@
-//! CLI command implementations for Phase 7: doctor and onboard.
+//! CLI command implementations.
 
 pub mod doctor;
 pub mod onboard;
+pub mod skill;

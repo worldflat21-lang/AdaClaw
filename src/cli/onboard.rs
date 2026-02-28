@@ -255,7 +255,7 @@ fn build_config_toml(
     if autonomy == "full" {
         out.push_str("# allow_full_outside_container = true  # uncomment to suppress container warning\n");
     }
-    out.push_str("\n");
+    out.push('\n');
 
     // Channels
     if !telegram_token.is_empty() {

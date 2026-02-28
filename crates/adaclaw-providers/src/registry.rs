@@ -14,4 +14,5 @@ pub static PROVIDER_REGISTRY: &[ProviderSpec] = &[
     crate::ollama::SPEC,
     crate::openrouter::SPEC,
     crate::deepseek::SPEC,
+    crate::groq::SPEC,
 ];

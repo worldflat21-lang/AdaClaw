@@ -37,12 +37,13 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // ── 飞书事件结构（schema 2.0）──────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct FeishuEvent {
+    #[allow(dead_code)]
     schema: Option<String>,
     header: Option<FeishuHeader>,
     event: Option<Value>,
@@ -59,6 +60,7 @@ struct FeishuHeader {
     token: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct FeishuChallengeResponse {
     challenge: String,
@@ -419,29 +421,63 @@ async fn handle_feishu_event(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    // 仅处理 text 类型
-    if msg_type != "text" {
+    // 飞书消息类型映射：对非文本消息生成占位内容，让用户知道消息被收到
+    let (text, _is_placeholder) = if msg_type == "text" {
+        // 飞书消息内容是 JSON 字符串，需要二次解析
+        let content_str = message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        let content_json: serde_json::Value = serde_json::from_str(content_str).unwrap_or(json!({}));
+        let t = content_json
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        (t, false)
+    } else {
+        // 非文本消息：生成占位描述，而非静默丢弃
+        let placeholder = match msg_type {
+            "image" => "[image]".to_string(),
+            "audio" => "[audio]".to_string(),
+            "file" => "[file]".to_string(),
+            "video" => "[video]".to_string(),
+            "sticker" => "[sticker]".to_string(),
+            "post" => {
+                // 富文本（post）消息，尝试提取纯文本
+                let content_str = message
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}");
+                let content_json: serde_json::Value =
+                    serde_json::from_str(content_str).unwrap_or(json!({}));
+                // post 格式: {"zh_cn": {"title": "...", "content": [[...]]}}
+                let extracted = content_json
+                    .get("zh_cn")
+                    .or_else(|| content_json.get("en_us"))
+                    .and_then(|lang| lang.get("title"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if extracted.is_empty() {
+                    "[post message]".to_string()
+                } else {
+                    extracted
+                }
+            }
+            other => format!("[{}]", other),
+        };
         debug!(
             channel = "feishu",
             msg_type = %msg_type,
-            "Non-text message, skipping"
+            placeholder = %placeholder,
+            "Non-text message received, using placeholder"
         );
-        return (StatusCode::OK, Json(json!({})));
-    }
+        (placeholder, true)
+    };
 
-    // 飞书消息内容是 JSON 字符串，需要二次解析
-    let content_str = message
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("{}");
-    let content_json: Value = serde_json::from_str(content_str).unwrap_or(json!({}));
-    let text = content_json
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
+    // 内容为空则跳过（text 类型空消息 / 非文本无内容）
     if text.is_empty() {
         return (StatusCode::OK, Json(json!({})));
     }

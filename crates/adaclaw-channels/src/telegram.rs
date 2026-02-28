@@ -1,13 +1,14 @@
 //! Telegram Bot API 渠道实现（长轮询模式）
 //!
-//! # 设计亮点（借鉴 nanobot + picoclaw）
+//! # 修复清单
 //!
-//! - **"Thinking..." 占位消息**：收到用户消息后立即发一条 "Thinking... 💭"，
-//!   Agent 回复完成后用 `editMessageText` 编辑它，比 typing indicator 体验更好。
-//! - **Markdown → Telegram HTML** 转换：支持粗体/斜体/代码/链接/删除线。
-//! - **id|username 复合白名单**：支持同时按 Telegram user_id 和 username 过滤。
-//! - **消息分片**：超过 4000 字符时自动按换行符分片发送。
-//! - **Webhook HMAC 验证**：`verify_webhook_signature()` 保留向后兼容。
+//! - **消息分片上限**：4096 字符（Telegram API 实际限制），按 Unicode 字符数计算
+//! - **持续 Typing 循环**：每 4 秒刷新 typing 状态，直到回复发出；避免 5s 过期
+//! - **群组 mention-only 模式**：`mention_only = true` 时仅响应 @提及机器人的消息
+//! - **Bot 命令**：支持 /start 和 /help 命令
+//! - **启动 409 冲突探针**：启动时先用 timeout=0 探测，避免与上一个实例冲突
+//! - **"Thinking..." 占位消息**：收到用户消息后立即发占位，回复后编辑替换
+//! - **Markdown → Telegram HTML** 转换
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
@@ -20,7 +21,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+
+/// Telegram 消息最大字符数（Unicode code points，非字节数）
+const TG_MAX_MESSAGE_CHARS: usize = 4096;
 
 // ── Telegram API 响应结构 ─────────────────────────────────────────────────────
 
@@ -29,6 +32,7 @@ struct TgResponse<T> {
     ok: bool,
     result: Option<T>,
     description: Option<String>,
+    error_code: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -72,12 +76,18 @@ struct TgPhotoSize {
 #[derive(Debug, Deserialize, Clone)]
 struct TgFile {
     file_id: String,
+    #[allow(dead_code)]
     mime_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct TgSentMessage {
     message_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TgBotInfo {
+    username: String,
 }
 
 // ── TelegramChannel ───────────────────────────────────────────────────────────
@@ -88,6 +98,12 @@ pub struct TelegramChannel {
     client: reqwest::Client,
     /// chat_id → 占位消息 message_id（"Thinking... 💭"）
     placeholders: Arc<Mutex<HashMap<String, i64>>>,
+    /// chat_id → typing loop task handle
+    typing_tasks: Arc<tokio::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// 是否在群组中只响应 @提及的消息
+    mention_only: bool,
+    /// 机器人用户名（用于 mention-only 模式的 @检测），启动时自动获取
+    bot_username: Arc<tokio::sync::Mutex<Option<String>>>,
     /// 机器人代理（可选）
     proxy: Option<String>,
 }
@@ -104,6 +120,9 @@ impl TelegramChannel {
             token,
             client,
             placeholders: Arc::new(Mutex::new(HashMap::new())),
+            typing_tasks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            mention_only: false,
+            bot_username: Arc::new(tokio::sync::Mutex::new(None)),
             proxy: None,
         }
     }
@@ -115,6 +134,11 @@ impl TelegramChannel {
 
     pub fn with_group_config(mut self, groups: Vec<String>, require_mention: bool) -> Self {
         self.base = self.base.with_group_config(groups, require_mention);
+        self
+    }
+
+    pub fn with_mention_only(mut self, mention_only: bool) -> Self {
+        self.mention_only = mention_only;
         self
     }
 
@@ -150,13 +174,112 @@ impl TelegramChannel {
 
         if !tg.ok {
             return Err(anyhow!(
-                "Telegram API error ({}): {}",
+                "Telegram API error ({}): {} [code={}]",
                 method,
-                tg.description.unwrap_or_default()
+                tg.description.unwrap_or_default(),
+                tg.error_code.unwrap_or(0)
             ));
         }
 
         tg.result.ok_or_else(|| anyhow!("Telegram API returned null result ({})", method))
+    }
+
+    /// 获取机器人用户名（用于 mention-only 检测），带缓存
+    async fn get_bot_username(&self) -> Option<String> {
+        {
+            let cache = self.bot_username.lock().await;
+            if let Some(ref uname) = *cache {
+                return Some(uname.clone());
+            }
+        }
+
+        let url = self.api_url("getMe");
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(tg) = resp.json::<TgResponse<TgBotInfo>>().await {
+                    if tg.ok {
+                        if let Some(info) = tg.result {
+                            let uname = info.username.clone();
+                            let mut cache = self.bot_username.lock().await;
+                            *cache = Some(uname.clone());
+                            debug!(channel = "telegram", username = %uname, "Bot username fetched");
+                            return Some(uname);
+                        }
+                    }
+                }
+                warn!(channel = "telegram", "Failed to parse getMe response");
+                None
+            }
+            Err(e) => {
+                warn!(channel = "telegram", error = %e, "getMe request failed");
+                None
+            }
+        }
+    }
+
+    /// 启动探针：用 timeout=0 探测，直到成功获得 getUpdates slot
+    ///
+    /// 如果上一个实例还在 long polling，直接进入 30s 长轮询会得到 409 Conflict。
+    /// 用 timeout=0 先快速轮询，直到成功（非 409）后再进入正常循环。
+    async fn startup_probe(&self) -> i64 {
+        let url = self.api_url("getUpdates");
+        let mut offset: i64 = 0;
+
+        loop {
+            let body = json!({
+                "offset": offset,
+                "timeout": 0,
+                "allowed_updates": ["message"],
+            });
+
+            match self.client.post(&url).json(&body).send().await {
+                Err(e) => {
+                    warn!(channel = "telegram", error = %e, "Startup probe request failed, retrying in 5s");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+                Ok(resp) => {
+                    let data: serde_json::Value = match resp.json().await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(channel = "telegram", error = %e, "Startup probe parse error, retrying in 5s");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
+
+                    let ok = data.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if ok {
+                        // 消费掉已有的 updates，防止重放
+                        if let Some(results) = data.get("result").and_then(|r| r.as_array()) {
+                            for update in results {
+                                if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64()) {
+                                    offset = uid + 1;
+                                }
+                            }
+                        }
+                        debug!(channel = "telegram", offset = offset, "Startup probe succeeded");
+                        return offset;
+                    }
+
+                    let error_code = data
+                        .get("error_code")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+
+                    if error_code == 409 {
+                        debug!(channel = "telegram", "Startup probe: 409 conflict (previous instance still running), retrying in 5s");
+                    } else {
+                        let desc = data
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        warn!(channel = "telegram", code = error_code, desc = %desc, "Startup probe API error, retrying in 5s");
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
     }
 
     /// 轮询新消息（timeout=30s 长轮询）
@@ -164,13 +287,13 @@ impl TelegramChannel {
         let url = self.api_url("getUpdates");
         let resp = self
             .client
-            .get(&url)
-            .query(&[
-                ("offset", offset.to_string()),
-                ("timeout", "30".to_string()),
-                ("limit", "100".to_string()),
-                ("allowed_updates", r#"["message"]"#.to_string()),
-            ])
+            .post(&url)
+            .json(&json!({
+                "offset": offset,
+                "timeout": 30,
+                "limit": 100,
+                "allowed_updates": ["message"],
+            }))
             .send()
             .await
             .map_err(|e| anyhow!("getUpdates request failed: {}", e))?;
@@ -179,6 +302,16 @@ impl TelegramChannel {
             .json()
             .await
             .map_err(|e| anyhow!("getUpdates JSON parse failed: {}", e))?;
+
+        if !tg.ok {
+            let code = tg.error_code.unwrap_or(0);
+            let desc = tg.description.unwrap_or_default();
+            // 409 特殊处理：有另一个实例在 polling
+            if code == 409 {
+                return Err(anyhow!("CONFLICT_409: {}", desc));
+            }
+            return Err(anyhow!("getUpdates error [{}]: {}", code, desc));
+        }
 
         Ok(tg.result.unwrap_or_default())
     }
@@ -196,13 +329,8 @@ impl TelegramChannel {
         Ok(msg.message_id)
     }
 
-    /// 编辑已存在的消息
-    async fn edit_message_text(
-        &self,
-        chat_id: i64,
-        message_id: i64,
-        text: &str,
-    ) -> Result<()> {
+    /// 编辑已存在的消息（失败时降级为新消息）
+    async fn edit_message_text(&self, chat_id: i64, message_id: i64, text: &str) -> Result<()> {
         let html = markdown_to_telegram_html(text);
         let result = self
             .call_api::<Value>(
@@ -217,33 +345,83 @@ impl TelegramChannel {
             .await;
 
         if let Err(e) = result {
-            // 编辑失败时降级到新消息
             warn!("editMessageText failed ({}), falling back to sendMessage", e);
-            let plain = self.send_message(chat_id, text, false).await;
-            if let Err(e2) = plain {
+            if let Err(e2) = self.send_message(chat_id, text, false).await {
                 error!("fallback sendMessage also failed: {}", e2);
             }
         }
         Ok(())
     }
 
-    /// 发送 typing... 动作
-    async fn send_typing(&self, chat_id: i64) {
-        let _ = self
-            .call_api::<Value>(
-                "sendChatAction",
-                json!({ "chat_id": chat_id, "action": "typing" }),
-            )
-            .await;
+    // ── Typing 循环 ───────────────────────────────────────────────────────────
+
+    /// 启动持续 typing 循环（每 4 秒刷新，直到被停止）
+    ///
+    /// Telegram 的 typing 状态 5 秒后过期，必须持续刷新才能保持"输入中"显示。
+    async fn start_typing_loop(&self, chat_id: i64) {
+        let chat_id_str = chat_id.to_string();
+        // 先停止已有的 typing loop
+        self.stop_typing_loop(&chat_id_str).await;
+
+        let client = self.client.clone();
+        let url = format!("https://api.telegram.org/bot{}/sendChatAction", self.token);
+
+        let handle = tokio::spawn(async move {
+            loop {
+                let body = json!({ "chat_id": chat_id, "action": "typing" });
+                let _ = client.post(&url).json(&body).send().await;
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
+        });
+
+        let mut tasks = self.typing_tasks.lock().await;
+        tasks.insert(chat_id_str, handle);
+    }
+
+    /// 停止指定 chat 的 typing 循环
+    async fn stop_typing_loop(&self, chat_id_str: &str) {
+        let mut tasks = self.typing_tasks.lock().await;
+        if let Some(handle) = tasks.remove(chat_id_str) {
+            handle.abort();
+        }
+    }
+
+    // ── Bot 命令处理 ──────────────────────────────────────────────────────────
+
+    /// 处理 /start 命令
+    async fn handle_command_start(&self, chat_id: i64) {
+        let text = "👋 Hello! I'm AdaClaw, your AI agent.\n\nSend me a message and I'll get to work!\nType /help to see available commands.";
+        let _ = self.send_message(chat_id, text, false).await;
+    }
+
+    /// 处理 /help 命令
+    async fn handle_command_help(&self, chat_id: i64) {
+        let text = "🤖 <b>AdaClaw Commands</b>\n\n/start — Start the bot\n/help — Show this help\n\nJust send a message to chat with the AI agent.";
+        if let Err(e) = self.send_message(chat_id, text, true).await {
+            error!(channel = "telegram", error = %e, "Failed to send help message");
+        }
+    }
+
+    // ── mention-only 辅助 ─────────────────────────────────────────────────────
+
+    /// 检查文本中是否包含对机器人的 @提及
+    fn contains_bot_mention(text: &str, bot_username: &str) -> bool {
+        let mention = format!("@{}", bot_username);
+        text.to_lowercase().contains(&mention.to_lowercase())
+    }
+
+    /// 从文本中移除 @botname 提及
+    fn strip_bot_mention(text: &str, bot_username: &str) -> String {
+        let mention = format!("@{}", bot_username);
+        let re = Regex::new(&format!("(?i){}\\b", regex::escape(&mention))).unwrap_or_else(|_| {
+            Regex::new("NOMATCH_IMPOSSIBLE").unwrap()
+        });
+        re.replace_all(text, "").trim().to_string()
     }
 
     // ── 消息处理 ──────────────────────────────────────────────────────────────
 
-    async fn process_update(
-        &self,
-        update: &TgUpdate,
-        bus: &Arc<dyn MessageBus>,
-    ) {
+    async fn process_update(&self, update: &TgUpdate, bus: &Arc<dyn MessageBus>) {
         let msg = match &update.message {
             Some(m) => m,
             None => return,
@@ -265,7 +443,25 @@ impl TelegramChannel {
         let chat_id_str = chat_id.to_string();
         let is_group = msg.chat.chat_type != "private";
 
-        // 白名单检查
+        // ── Bot 命令处理（/start、/help）─────────────────────────────────────
+        if let Some(text) = &msg.text {
+            let cmd = text.split_whitespace().next().unwrap_or("").to_lowercase();
+            // 去掉 @botname 后缀（如 /start@MyBot）
+            let base_cmd = cmd.split('@').next().unwrap_or(&cmd);
+            match base_cmd {
+                "/start" => {
+                    self.handle_command_start(chat_id).await;
+                    return;
+                }
+                "/help" => {
+                    self.handle_command_help(chat_id).await;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // ── 白名单检查 ────────────────────────────────────────────────────────
         let allowed = if is_group {
             self.base.is_group_allowed(&sender_id)
         } else {
@@ -280,16 +476,48 @@ impl TelegramChannel {
             return;
         }
 
-        // 提取文本内容
-        let mut content_parts: Vec<String> = Vec::new();
-        if let Some(text) = &msg.text {
-            content_parts.push(text.clone());
-        }
-        if let Some(caption) = &msg.caption {
-            content_parts.push(caption.clone());
+        // ── 群组 mention-only 过滤 ────────────────────────────────────────────
+        if is_group && self.mention_only {
+            let text_to_check = msg.text.as_deref()
+                .or(msg.caption.as_deref())
+                .unwrap_or("");
+
+            let bot_uname = self.bot_username.lock().await.clone();
+            match bot_uname {
+                Some(ref uname) => {
+                    if !Self::contains_bot_mention(text_to_check, uname) {
+                        debug!(
+                            channel = "telegram",
+                            chat_id = %chat_id,
+                            "Group message without bot mention, skipping (mention_only=true)"
+                        );
+                        return;
+                    }
+                }
+                None => {
+                    // 未获取到用户名，跳过（保守策略）
+                    debug!(channel = "telegram", "Bot username not available, skipping group message");
+                    return;
+                }
+            }
         }
 
-        // 处理媒体（标注类型，后续可接语音转写）
+        // ── 提取文本内容 ──────────────────────────────────────────────────────
+        let mut content_parts: Vec<String> = Vec::new();
+
+        // 提取文字（群组中去除 @提及）
+        let raw_text = msg.text.as_deref().or(msg.caption.as_deref()).unwrap_or("");
+        let text_content = if is_group && self.mention_only {
+            let bot_uname = self.bot_username.lock().await.clone().unwrap_or_default();
+            Self::strip_bot_mention(raw_text, &bot_uname)
+        } else {
+            raw_text.to_string()
+        };
+        if !text_content.is_empty() {
+            content_parts.push(text_content);
+        }
+
+        // ── 处理媒体附件 ──────────────────────────────────────────────────────
         let mut metadata_extra: HashMap<String, Value> = HashMap::new();
         if let Some(photos) = &msg.photo {
             if let Some(largest) = photos.last() {
@@ -331,18 +559,15 @@ impl TelegramChannel {
         debug!(
             chat_id = %chat_id,
             sender_id = %sender_id,
-            preview = %&content.chars().take(60).collect::<String>(),
+            preview = %content.chars().take(60).collect::<String>(),
             "Telegram message received"
         );
 
-        // 发送 typing 动作
-        self.send_typing(chat_id).await;
+        // ── 启动持续 Typing 循环 ──────────────────────────────────────────────
+        self.start_typing_loop(chat_id).await;
 
-        // 发送 "Thinking..." 占位消息
-        match self
-            .send_message(chat_id, "Thinking... 💭", false)
-            .await
-        {
+        // ── 发送 "Thinking..." 占位消息 ───────────────────────────────────────
+        match self.send_message(chat_id, "Thinking... 💭", false).await {
             Ok(mid) => {
                 let mut pmap = self.placeholders.lock().unwrap();
                 pmap.insert(chat_id_str.clone(), mid);
@@ -352,44 +577,28 @@ impl TelegramChannel {
             }
         }
 
-        // 构建 metadata
+        // ── 构建 metadata ─────────────────────────────────────────────────────
         let mut metadata: HashMap<String, Value> = HashMap::new();
-        metadata.insert(
-            "message_id".to_string(),
-            Value::String(msg.message_id.to_string()),
-        );
-        metadata.insert(
-            "user_id".to_string(),
-            Value::String(user.id.to_string()),
-        );
-        metadata.insert(
-            "first_name".to_string(),
-            Value::String(user.first_name.clone()),
-        );
-        metadata.insert(
-            "is_group".to_string(),
-            Value::Bool(is_group),
-        );
+        metadata.insert("message_id".to_string(), Value::String(msg.message_id.to_string()));
+        metadata.insert("user_id".to_string(), Value::String(user.id.to_string()));
+        metadata.insert("first_name".to_string(), Value::String(user.first_name.clone()));
+        metadata.insert("is_group".to_string(), Value::Bool(is_group));
         for (k, v) in metadata_extra {
             metadata.insert(k, v);
         }
 
-        // 上报到 Bus（session_id = chat_id，供出站路由使用）
+        // ── 上报到 Bus ────────────────────────────────────────────────────────
         self.base
-            .handle_message(
-                bus,
-                &sender_id,
-                &sender_name,
-                &chat_id_str,
-                &content,
-                metadata,
-            )
+            .handle_message(bus, &sender_id, &sender_name, &chat_id_str, &content, metadata)
             .await;
     }
 
-    /// 将回复内容分片发送（每片最多 4000 字符）
+    /// 将回复内容分片发送（每片最多 TG_MAX_MESSAGE_CHARS 字符）
     async fn send_reply(&self, chat_id: i64, chat_id_str: &str, content: &str) {
-        let chunks = split_message(content, 4000);
+        // 先停止 typing 循环
+        self.stop_typing_loop(chat_id_str).await;
+
+        let chunks = split_message(content, TG_MAX_MESSAGE_CHARS);
 
         // 第一片：尝试编辑占位消息
         let mut first_chunk = true;
@@ -461,7 +670,20 @@ impl Channel for TelegramChannel {
         self.base.set_running(true);
         info!("Starting Telegram channel (long polling)...");
 
-        let mut offset: i64 = 0;
+        // mention-only 模式需要先获取 bot username
+        if self.mention_only {
+            if let Some(uname) = self.get_bot_username().await {
+                info!(channel = "telegram", username = %uname, "mention_only mode enabled");
+            } else {
+                warn!(channel = "telegram", "mention_only=true but failed to fetch bot username; group messages will be skipped");
+            }
+        }
+
+        // 启动探针：等待 getUpdates slot 可用（避免 409 Conflict）
+        info!(channel = "telegram", "Running startup probe (detecting 409 conflicts)...");
+        let mut offset = self.startup_probe().await;
+        info!(channel = "telegram", offset = offset, "Startup probe done, entering long-poll loop");
+
         let mut consecutive_errors: u32 = 0;
 
         while self.base.is_running() {
@@ -476,14 +698,25 @@ impl Channel for TelegramChannel {
                     }
                 }
                 Err(e) => {
+                    let err_str = e.to_string();
                     consecutive_errors += 1;
-                    let wait = std::cmp::min(consecutive_errors * 2, 30);
-                    warn!(
-                        error = %e,
-                        retry_in = wait,
-                        "getUpdates failed, retrying in {}s", wait
-                    );
-                    tokio::time::sleep(Duration::from_secs(wait as u64)).await;
+
+                    if err_str.starts_with("CONFLICT_409") {
+                        // 409 冲突：等待 35s 让对方的 30s 长轮询超时
+                        warn!(
+                            channel = "telegram",
+                            "409 Conflict: another instance is polling. Waiting 35s for it to expire..."
+                        );
+                        tokio::time::sleep(Duration::from_secs(35)).await;
+                    } else {
+                        let wait = std::cmp::min(consecutive_errors * 2, 30);
+                        warn!(
+                            error = %e,
+                            retry_in = wait,
+                            "getUpdates failed, retrying in {}s", wait
+                        );
+                        tokio::time::sleep(Duration::from_secs(wait as u64)).await;
+                    }
                 }
             }
         }
@@ -517,21 +750,17 @@ impl Channel for TelegramChannel {
 
     async fn stop(&self) -> Result<()> {
         self.base.set_running(false);
+        // 停止所有 typing 循环
+        let mut tasks = self.typing_tasks.lock().await;
+        for (_, handle) in tasks.drain() {
+            handle.abort();
+        }
         info!("Telegram channel stop requested");
         Ok(())
     }
 }
 
 // ── Markdown → Telegram HTML 转换 ─────────────────────────────────────────────
-//
-// 参考 nanobot (Python) 和 picoclaw (Go) 的实现：
-// 1. 保护代码块/行内代码
-// 2. 移除 # 标题符号
-// 3. 移除 > 引用符号
-// 4. HTML 转义
-// 5. 链接/粗体/斜体/删除线
-// 6. 列表项
-// 7. 还原代码块
 
 pub fn markdown_to_telegram_html(text: &str) -> String {
     if text.is_empty() {
@@ -562,15 +791,11 @@ pub fn markdown_to_telegram_html(text: &str) -> String {
 
     // Step 3: 移除 # 标题标记（保留文字）
     let re_heading = Regex::new(r"(?m)^#{1,6}\s+(.+)$").unwrap();
-    result = re_heading
-        .replace_all(&result, "$1")
-        .into_owned();
+    result = re_heading.replace_all(&result, "$1").into_owned();
 
     // Step 4: 移除 > 引用标记
     let re_blockquote = Regex::new(r"(?m)^>\s*(.*)$").unwrap();
-    result = re_blockquote
-        .replace_all(&result, "$1")
-        .into_owned();
+    result = re_blockquote.replace_all(&result, "$1").into_owned();
 
     // Step 5: HTML 转义
     result = result
@@ -588,14 +813,13 @@ pub fn markdown_to_telegram_html(text: &str) -> String {
     let re_bold_star = Regex::new(r"\*\*(.+?)\*\*").unwrap();
     result = re_bold_star.replace_all(&result, "<b>$1</b>").into_owned();
     let re_bold_under = Regex::new(r"__(.+?)__").unwrap();
-    result = re_bold_under
-        .replace_all(&result, "<b>$1</b>")
-        .into_owned();
+    result = re_bold_under.replace_all(&result, "<b>$1</b>").into_owned();
 
     // Step 8: 斜体 _text_（避免匹配 some_var_name）
-    let re_italic =
-        Regex::new(r"(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])").unwrap();
-    result = re_italic.replace_all(&result, "<i>$1</i>").into_owned();
+    let re_italic = Regex::new(r"(^|[^a-zA-Z0-9])_([^_\n]+)_((?:[^a-zA-Z0-9])|$)").unwrap();
+    result = re_italic
+        .replace_all(&result, "${1}<i>${2}</i>${3}")
+        .into_owned();
 
     // Step 9: 删除线 ~~text~~
     let re_strike = Regex::new(r"~~(.+?)~~").unwrap();
@@ -632,25 +856,52 @@ pub fn markdown_to_telegram_html(text: &str) -> String {
     result
 }
 
-/// 将长文本按换行符（优先）或空格分成不超过 max_len 字符的片段。
-fn split_message(content: &str, max_len: usize) -> Vec<String> {
-    if content.len() <= max_len {
+/// 将长文本按 Unicode 字符数分片（最多 max_chars 个字符），
+/// 优先在换行符处断开，其次在空格处，最后强制截断。
+fn split_message(content: &str, max_chars: usize) -> Vec<String> {
+    // 按字符数而非字节数判断，对中文/emoji 等 Unicode 字符正确处理
+    if content.chars().count() <= max_chars {
         return vec![content.to_string()];
     }
+
     let mut chunks = Vec::new();
     let mut remaining = content;
+
     while !remaining.is_empty() {
-        if remaining.len() <= max_len {
+        let char_count = remaining.chars().count();
+        if char_count <= max_chars {
             chunks.push(remaining.to_string());
             break;
         }
-        let cut = &remaining[..max_len];
-        let pos = cut.rfind('\n').unwrap_or_else(|| {
-            cut.rfind(' ').unwrap_or(max_len)
-        });
-        chunks.push(remaining[..pos].to_string());
-        remaining = remaining[pos..].trim_start_matches(|c| c == '\n' || c == ' ');
+
+        // 找到第 max_chars 个字符的字节偏移
+        let hard_byte_pos = remaining
+            .char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
+        let candidate = &remaining[..hard_byte_pos];
+
+        // 优先在换行符处断开
+        let cut_pos = if let Some(nl) = candidate.rfind('\n') {
+            // 只有换行符位置足够靠后才用（至少是候选区一半）才用
+            if candidate[..nl].chars().count() >= max_chars / 2 {
+                nl + 1 // 包含换行符
+            } else {
+                // 换行符太靠前，尝试空格
+                candidate.rfind(' ').map(|p| p + 1).unwrap_or(hard_byte_pos)
+            }
+        } else if let Some(sp) = candidate.rfind(' ') {
+            sp + 1
+        } else {
+            hard_byte_pos // 强制截断
+        };
+
+        chunks.push(remaining[..cut_pos].to_string());
+        remaining = remaining[cut_pos..].trim_start_matches(['\n', ' ']);
     }
+
     chunks
 }
 
@@ -685,28 +936,100 @@ mod tests {
 
     #[test]
     fn test_split_message_short() {
-        let chunks = split_message("hello", 4000);
+        let chunks = split_message("hello", TG_MAX_MESSAGE_CHARS);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], "hello");
     }
 
     #[test]
-    fn test_split_message_long() {
+    fn test_split_message_ascii_long() {
         let text = "a".repeat(5000);
-        let chunks = split_message(&text, 4000);
+        let chunks = split_message(&text, TG_MAX_MESSAGE_CHARS);
         assert!(chunks.len() > 1);
         for chunk in &chunks {
-            assert!(chunk.len() <= 4000);
+            assert!(chunk.chars().count() <= TG_MAX_MESSAGE_CHARS);
         }
+    }
+
+    #[test]
+    fn test_split_message_unicode() {
+        // 中文字符每个 3 字节，但应按字符数（Unicode code points）分片
+        let text = "中".repeat(5000);
+        let chunks = split_message(&text, TG_MAX_MESSAGE_CHARS);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(
+                chunk.chars().count() <= TG_MAX_MESSAGE_CHARS,
+                "chunk has {} chars, max is {}",
+                chunk.chars().count(),
+                TG_MAX_MESSAGE_CHARS
+            );
+        }
+        // 验证内容完整
+        let rejoined: String = chunks.join("");
+        assert_eq!(rejoined, text);
+    }
+
+    #[test]
+    fn test_split_message_exactly_at_limit() {
+        let text = "x".repeat(TG_MAX_MESSAGE_CHARS);
+        let chunks = split_message(&text, TG_MAX_MESSAGE_CHARS);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn test_split_message_one_over_limit() {
+        let text = "x".repeat(TG_MAX_MESSAGE_CHARS + 1);
+        let chunks = split_message(&text, TG_MAX_MESSAGE_CHARS);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= TG_MAX_MESSAGE_CHARS);
+        }
+    }
+
+    #[test]
+    fn test_split_preserves_content() {
+        let text = "word ".repeat(TG_MAX_MESSAGE_CHARS / 5 + 100);
+        let chunks = split_message(&text, TG_MAX_MESSAGE_CHARS);
+        let rejoined = chunks.join("");
+        assert_eq!(rejoined, text);
     }
 
     #[test]
     fn test_allowlist_compound() {
         let ch = TelegramChannel::new("token".to_string())
             .with_allow_from(vec!["123456".to_string()]);
-        // compound sender_id "123456|alice" should match allowed "123456"
         assert!(ch.base.is_allowed("123456|alice"));
-        // unknown id should be rejected
         assert!(!ch.base.is_allowed("999|alice"));
+    }
+
+    #[test]
+    fn test_contains_bot_mention() {
+        assert!(TelegramChannel::contains_bot_mention("hi @MyBot please help", "mybot"));
+        assert!(TelegramChannel::contains_bot_mention("@mybot do this", "mybot"));
+        assert!(!TelegramChannel::contains_bot_mention("hello world", "mybot"));
+        assert!(!TelegramChannel::contains_bot_mention("@otherbot", "mybot"));
+    }
+
+    #[test]
+    fn test_strip_bot_mention() {
+        let result = TelegramChannel::strip_bot_mention("@mybot please help", "mybot");
+        assert_eq!(result, "please help");
+        let result2 = TelegramChannel::strip_bot_mention("hi @MyBot status", "mybot");
+        assert_eq!(result2, "hi status");
+    }
+
+    #[test]
+    fn test_split_message_limit_is_4096() {
+        // 验证常量确实是 4096
+        assert_eq!(TG_MAX_MESSAGE_CHARS, 4096);
+        // 4096 字符的文本不应分片
+        let text = "a".repeat(4096);
+        let chunks = split_message(&text, TG_MAX_MESSAGE_CHARS);
+        assert_eq!(chunks.len(), 1);
+        // 4097 字符的文本应分片
+        let text2 = "a".repeat(4097);
+        let chunks2 = split_message(&text2, TG_MAX_MESSAGE_CHARS);
+        assert!(chunks2.len() > 1);
     }
 }

@@ -34,13 +34,13 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::{
     extract::{Query, State},
-    http::{StatusCode},
-    routing::{get, post},
+    http::StatusCode,
+    routing::get,
     Router,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,7 +65,9 @@ struct WeComMessage {
     response_url: String,
     text: Option<WeComText>,
     voice: Option<WeComVoice>,
+    #[allow(dead_code)]
     image: Option<WeComMedia>,
+    #[allow(dead_code)]
     file: Option<WeComMedia>,
     mixed: Option<WeComMixed>,
 }
@@ -89,6 +91,7 @@ struct WeComVoice {
 
 #[derive(Debug, Deserialize, Clone)]
 struct WeComMedia {
+    #[allow(dead_code)]
     #[serde(default)]
     url: String,
 }
@@ -148,6 +151,7 @@ struct WeComState {
     token: String,
     encoding_aes_key: Option<String>,
     bus: Arc<dyn MessageBus>,
+    #[allow(dead_code)]
     http_client: reqwest::Client,
     /// 消息去重：msg_id → bool（ring buffer 简化版，使用 HashMap + 容量限制）
     processed_msgs: Arc<tokio::sync::Mutex<HashMap<String, ()>>>,
@@ -166,7 +170,7 @@ impl WeComState {
         if self.token.is_empty() {
             return true; // 未配置 token，跳过验证
         }
-        let mut params = vec![
+        let mut params = [
             self.token.as_str(),
             timestamp,
             nonce,
@@ -217,12 +221,32 @@ impl WeComState {
             .map_err(|e| anyhow!("AES decryption failed: {:?}", e))?;
 
         // 移除 WeCom 自定义 PKCS7 padding（block_size = 32）
+        // 必须验证所有 padding 字节均为相同值，防止 padding oracle 攻击
         if decrypted.is_empty() {
             return Err(anyhow!("Decrypted data is empty"));
         }
         let pad = decrypted[decrypted.len() - 1] as usize;
         if pad == 0 || pad > 32 {
-            return Err(anyhow!("Invalid PKCS7 padding: {}", pad));
+            return Err(anyhow!("Invalid PKCS7 padding byte value: {}", pad));
+        }
+        if pad > decrypted.len() {
+            return Err(anyhow!(
+                "PKCS7 padding size {} exceeds data length {}",
+                pad,
+                decrypted.len()
+            ));
+        }
+        // 验证所有 padding 字节均为相同值（标准 PKCS7 要求）
+        for i in 0..pad {
+            let idx = decrypted.len() - 1 - i;
+            if decrypted[idx] as usize != pad {
+                return Err(anyhow!(
+                    "Invalid PKCS7 padding: byte at position {} is {}, expected {}",
+                    idx,
+                    decrypted[idx],
+                    pad
+                ));
+            }
         }
         let data = &decrypted[..decrypted.len() - pad];
 
@@ -567,7 +591,7 @@ fn quick_xml_parse(xml: &str) -> Result<WeComEncryptXml> {
     Ok(WeComEncryptXml { encrypt })
 }
 
-fn extract_xml_tag<'a>(xml: &'a str, tag: &str) -> Option<String> {
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
     let start = xml.find(&open)? + open.len();

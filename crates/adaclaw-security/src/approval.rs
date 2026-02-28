@@ -43,16 +43,19 @@ pub enum AutonomyLevel {
     Full,
 }
 
-impl AutonomyLevel {
-    /// Parse from a string (case-insensitive). Defaults to `Supervised`.
-    pub fn from_str(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
+impl std::str::FromStr for AutonomyLevel {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s.trim().to_lowercase().as_str() {
             "readonly" | "read_only" | "read-only" => AutonomyLevel::ReadOnly,
             "full" => AutonomyLevel::Full,
             _ => AutonomyLevel::Supervised,
-        }
+        })
     }
+}
 
+impl AutonomyLevel {
     /// Returns a human-readable description.
     pub fn description(&self) -> &'static str {
         match self {
@@ -122,7 +125,7 @@ impl ApprovalManager {
     /// Create from a config string (e.g. `"supervised"`).
     pub fn from_config_str(level_str: &str, interactive: bool) -> Self {
         Self {
-            level: AutonomyLevel::from_str(level_str),
+            level: level_str.parse().unwrap_or(AutonomyLevel::Supervised),
             interactive,
         }
     }
@@ -255,14 +258,14 @@ mod tests {
 
     #[test]
     fn test_autonomy_level_from_str() {
-        assert_eq!(AutonomyLevel::from_str("readonly"), AutonomyLevel::ReadOnly);
-        assert_eq!(AutonomyLevel::from_str("ReadOnly"), AutonomyLevel::ReadOnly);
-        assert_eq!(AutonomyLevel::from_str("read_only"), AutonomyLevel::ReadOnly);
-        assert_eq!(AutonomyLevel::from_str("full"), AutonomyLevel::Full);
-        assert_eq!(AutonomyLevel::from_str("FULL"), AutonomyLevel::Full);
-        assert_eq!(AutonomyLevel::from_str("supervised"), AutonomyLevel::Supervised);
-        assert_eq!(AutonomyLevel::from_str("unknown"), AutonomyLevel::Supervised);
-        assert_eq!(AutonomyLevel::from_str(""), AutonomyLevel::Supervised);
+        assert_eq!("readonly".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::ReadOnly);
+        assert_eq!("ReadOnly".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::ReadOnly);
+        assert_eq!("read_only".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::ReadOnly);
+        assert_eq!("full".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::Full);
+        assert_eq!("FULL".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::Full);
+        assert_eq!("supervised".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::Supervised);
+        assert_eq!("unknown".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::Supervised);
+        assert_eq!("".parse::<AutonomyLevel>().unwrap(), AutonomyLevel::Supervised);
     }
 
     #[test]

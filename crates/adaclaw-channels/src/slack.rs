@@ -6,6 +6,13 @@
 //! 2. 本渠道验证 HMAC-SHA256 签名（X-Slack-Signature），解析消息
 //! 3. `send()` 通过 Slack `chat.postMessage` API 回复
 //!
+//! # 修复
+//!
+//! - **mrkdwn 格式转换**：Slack 使用 mrkdwn（`*bold*`、`_italic_`），
+//!   不是 Markdown（`**bold**`、`_italic_`）；发送前自动转换
+//! - **Thread 支持**：session_id 携带 `channel_id/thread_ts` 格式时，
+//!   回复自动使用 `thread_ts` 发送到对应 thread
+//!
 //! # 配置示例
 //!
 //! ```toml
@@ -31,14 +38,14 @@ use axum::{
     Json, Router,
 };
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 const SLACK_API: &str = "https://slack.com/api";
 
@@ -61,6 +68,8 @@ struct SlackEvent {
     text: Option<String>,
     channel: Option<String>,
     ts: Option<String>,
+    /// thread_ts：若消息在 thread 中，此字段为 thread 根消息的 ts
+    thread_ts: Option<String>,
     bot_id: Option<String>,
     subtype: Option<String>,
 }
@@ -124,27 +133,47 @@ impl SlackState {
         expected == received_sig
     }
 
-    async fn post_message(&self, channel_id: &str, text: &str) -> Result<()> {
+    /// 发送消息（支持 thread）
+    ///
+    /// - `channel_id`：Slack channel ID
+    /// - `text`：消息内容（Markdown 会被转为 mrkdwn）
+    /// - `thread_ts`：可选，若提供则回复到该 thread
+    async fn post_message(
+        &self,
+        channel_id: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<()> {
         let url = format!("{}/chat.postMessage", SLACK_API);
+        // 转换 Markdown → Slack mrkdwn 格式
+        let mrkdwn_text = markdown_to_slack_mrkdwn(text);
+
+        let mut body = json!({
+            "channel": channel_id,
+            "text": mrkdwn_text,
+            "mrkdwn": true,
+        });
+        // 如有 thread_ts，回复到该 thread
+        if let Some(ts) = thread_ts {
+            body["thread_ts"] = json!(ts);
+        }
+
         let resp = self
             .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.bot_token))
-            .json(&json!({
-                "channel": channel_id,
-                "text": text,
-            }))
+            .json(&body)
             .send()
             .await
             .map_err(|e| anyhow!("Slack postMessage request failed: {}", e))?;
 
-        let body: Value = resp
+        let resp_body: Value = resp
             .json()
             .await
             .map_err(|e| anyhow!("Slack postMessage response parse failed: {}", e))?;
 
-        if !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            let err = body
+        if !resp_body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let err = resp_body
                 .get("error")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
@@ -244,11 +273,14 @@ impl Channel for SlackChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        let channel_id = &msg.target_session_id;
+        let session_id = &msg.target_session_id;
         let content = match &msg.content {
             MessageContent::Text(t) => t.clone(),
             _ => return Ok(()),
         };
+
+        // 解析 session_id："channel_id" 或 "channel_id/thread_ts"
+        let (channel_id, thread_ts) = parse_slack_session_id(session_id);
 
         let state = SlackState {
             base: Arc::clone(&self.base),
@@ -257,7 +289,7 @@ impl Channel for SlackChannel {
             bus: Arc::new(crate::DummyBus),
             http_client: self.http_client.clone(),
         };
-        state.post_message(channel_id, &content).await
+        state.post_message(&channel_id, &content, thread_ts.as_deref()).await
     }
 
     async fn stop(&self) -> Result<()> {
@@ -323,21 +355,40 @@ async fn handle_slack_event(
                     "Slack message received"
                 );
 
+                // thread_ts：若消息在 thread 中则有值，否则用 ts 自身
+                // session_id 格式："channel_id" 或 "channel_id/thread_ts"
+                // send() 会解析此格式，将回复发到正确的 thread
+                let thread_ts = event.thread_ts.clone().or_else(|| Some(ts.clone()));
+                let session_id = if let Some(ref tts) = thread_ts {
+                    if tts == &ts {
+                        // 顶层消息，session_id = channel_id/ts（创建新 thread）
+                        format!("{}/{}", channel_id, ts)
+                    } else {
+                        // 在已有 thread 中回复
+                        format!("{}/{}", channel_id, tts)
+                    }
+                } else {
+                    channel_id.clone()
+                };
+
                 let mut metadata: HashMap<String, Value> = HashMap::new();
-                metadata.insert("ts".to_string(), Value::String(ts));
+                metadata.insert("ts".to_string(), Value::String(ts.clone()));
+                if let Some(ref tts) = event.thread_ts {
+                    metadata.insert("thread_ts".to_string(), Value::String(tts.clone()));
+                }
                 metadata.insert(
                     "team_id".to_string(),
                     Value::String(payload.team_id.clone().unwrap_or_default()),
                 );
 
-                // session_id = channel_id（send() 方法调用 chat.postMessage 用）
+                // session_id = "channel_id/thread_ts"（send() 方法回复到对应 thread）
                 state
                     .base
                     .handle_message(
                         &state.bus,
                         &sender_id,
                         &sender_id,
-                        &channel_id,
+                        &session_id,
                         text.trim(),
                         metadata,
                     )
@@ -347,4 +398,163 @@ async fn handle_slack_event(
     }
 
     (StatusCode::OK, Json(json!({})))
+}
+
+// ── Markdown → Slack mrkdwn 转换 ──────────────────────────────────────────────
+//
+// Slack 使用 mrkdwn 格式，与 Markdown 不同：
+// - 粗体：`*text*`（不是 `**text**`）
+// - 斜体：`_text_`（相同）
+// - 删除线：`~text~`（不是 `~~text~~`）
+// - 行内代码：` `code` `（相同）
+// - 代码块：` ```code``` `（相同但不支持语言标注）
+// - 链接：`<url|text>`（不是 `[text](url)`）
+// - 无序列表：`•`（保留）
+// - 标题：无，改为粗体
+
+pub fn markdown_to_slack_mrkdwn(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    // Step 1: 提取并保护代码块（```...```）
+    let mut code_blocks: Vec<String> = Vec::new();
+    let re_code_block = regex::Regex::new(r"(?s)```[\w]*\n?(.*?)```").unwrap();
+    let mut result = re_code_block
+        .replace_all(text, |caps: &regex::Captures| {
+            let idx = code_blocks.len();
+            code_blocks.push(caps[1].to_string());
+            format!("\x00CB{}\x00", idx)
+        })
+        .into_owned();
+
+    // Step 2: 提取并保护行内代码（`...`）
+    let mut inline_codes: Vec<String> = Vec::new();
+    let re_inline_code = regex::Regex::new(r"`([^`]+)`").unwrap();
+    result = re_inline_code
+        .replace_all(&result, |caps: &regex::Captures| {
+            let idx = inline_codes.len();
+            inline_codes.push(caps[1].to_string());
+            format!("\x00IC{}\x00", idx)
+        })
+        .into_owned();
+
+    // Step 3: Markdown 链接 [text](url) → Slack <url|text>
+    let re_link = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
+    result = re_link
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("<{}|{}>", &caps[2], &caps[1])
+        })
+        .into_owned();
+
+    // Step 4: 粗体 **text** / __text__ → *text*
+    let re_bold_star = regex::Regex::new(r"\*\*(.+?)\*\*").unwrap();
+    result = re_bold_star.replace_all(&result, "*$1*").into_owned();
+    let re_bold_under = regex::Regex::new(r"__(.+?)__").unwrap();
+    result = re_bold_under.replace_all(&result, "*$1*").into_owned();
+
+    // Step 5: 删除线 ~~text~~ → ~text~
+    let re_strike = regex::Regex::new(r"~~(.+?)~~").unwrap();
+    result = re_strike.replace_all(&result, "~$1~").into_owned();
+
+    // Step 6: 标题 # Title → *Title*（mrkdwn 无标题，用粗体代替）
+    let re_heading = regex::Regex::new(r"(?m)^#{1,6}\s+(.+)$").unwrap();
+    result = re_heading.replace_all(&result, "*$1*").into_owned();
+
+    // Step 7: 移除 > 引用标记
+    let re_blockquote = regex::Regex::new(r"(?m)^>\s*(.*)$").unwrap();
+    result = re_blockquote.replace_all(&result, "$1").into_owned();
+
+    // Step 8: 无序列表 - item / * item → • item
+    let re_list = regex::Regex::new(r"(?m)^[-*]\s+").unwrap();
+    result = re_list.replace_all(&result, "• ").into_owned();
+
+    // Step 9: 还原行内代码
+    for (i, code) in inline_codes.iter().enumerate() {
+        result = result.replace(
+            &format!("\x00IC{}\x00", i),
+            &format!("`{}`", code),
+        );
+    }
+
+    // Step 10: 还原代码块
+    for (i, code) in code_blocks.iter().enumerate() {
+        result = result.replace(
+            &format!("\x00CB{}\x00", i),
+            &format!("```{}```", code),
+        );
+    }
+
+    result
+}
+
+// ── Session ID 解析 ───────────────────────────────────────────────────────────
+
+/// 解析 Slack session_id 格式
+///
+/// 格式：
+/// - `"C1234567890"` → `("C1234567890", None)` （直接回复到 channel）
+/// - `"C1234567890/1234567890.123456"` → `("C1234567890", Some("1234567890.123456"))` （回复到 thread）
+pub fn parse_slack_session_id(session_id: &str) -> (String, Option<String>) {
+    if let Some(slash_pos) = session_id.rfind('/') {
+        let channel = &session_id[..slash_pos];
+        let thread_ts = &session_id[slash_pos + 1..];
+        if !channel.is_empty() && !thread_ts.is_empty() {
+            return (channel.to_string(), Some(thread_ts.to_string()));
+        }
+    }
+    (session_id.to_string(), None)
+}
+
+// ── 单元测试 ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mrkdwn_bold() {
+        let result = markdown_to_slack_mrkdwn("Hello **world**!");
+        assert_eq!(result, "Hello *world*!");
+    }
+
+    #[test]
+    fn test_mrkdwn_link() {
+        let result = markdown_to_slack_mrkdwn("[Google](https://google.com)");
+        assert_eq!(result, "<https://google.com|Google>");
+    }
+
+    #[test]
+    fn test_mrkdwn_strikethrough() {
+        let result = markdown_to_slack_mrkdwn("~~deleted~~");
+        assert_eq!(result, "~deleted~");
+    }
+
+    #[test]
+    fn test_mrkdwn_heading() {
+        let result = markdown_to_slack_mrkdwn("# Title\nSome text");
+        assert!(result.contains("*Title*"));
+    }
+
+    #[test]
+    fn test_mrkdwn_code_block_preserved() {
+        let input = "```rust\nfn main() {}\n```";
+        let result = markdown_to_slack_mrkdwn(input);
+        assert!(result.contains("fn main() {}"));
+        assert!(result.contains("```"));
+    }
+
+    #[test]
+    fn test_parse_slack_session_id_simple() {
+        let (ch, ts) = parse_slack_session_id("C1234567890");
+        assert_eq!(ch, "C1234567890");
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn test_parse_slack_session_id_with_thread() {
+        let (ch, ts) = parse_slack_session_id("C1234567890/1234567890.123456");
+        assert_eq!(ch, "C1234567890");
+        assert_eq!(ts.as_deref(), Some("1234567890.123456"));
+    }
 }

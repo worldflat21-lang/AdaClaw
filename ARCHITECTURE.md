@@ -118,33 +118,40 @@ adaclaw/
 │   ├── adaclaw-channels/            # 渠道实现
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── manager.rs       # ChannelManager
-│   │       ├── telegram.rs      # Telegram Bot API
-│   │       ├── discord.rs       # Discord
-│   │       ├── slack.rs         # Slack
-│   │       ├── dingtalk.rs      # 钉钉
-│   │       ├── feishu.rs        # 飞书/Lark
-│   │       ├── wechat_work.rs   # 企业微信
-│   │       ├── email.rs         # Email (IMAP+SMTP)
-│   │       ├── matrix.rs        # Matrix (E2EE 可选)
-│   │       ├── irc.rs           # IRC
-│   │       ├── webhook.rs       # 通用 HTTP Webhook
-│   │       └── cli.rs           # 本地 CLI 渠道
+│   │       ├── base.rs          # BaseChannel 辅助结构（白名单/运行状态/消息上报）
+│   │       ├── manager.rs       # ChannelManager（并发管理 + Outbound Dispatch Loop）
+│   │       ├── telegram.rs      # Telegram Bot API（长轮询+Webhook，HMAC验证）
+│   │       ├── discord.rs       # Discord（Gateway WebSocket + 心跳分离 + 指数退避重连）
+│   │       ├── slack.rs         # Slack（Events API Webhook，HMAC+防重放）
+│   │       ├── dingtalk.rs      # 钉钉（Outgoing Webhook，HMAC-SHA256）
+│   │       ├── feishu.rs        # 飞书/Lark（事件订阅，tenant_access_token 自动刷新）
+│   │       ├── wechat_work.rs   # 企业微信（SHA1验证 + AES-256-CBC block_size=32 解密）
+│   │       ├── webhook.rs       # 通用 HTTP Webhook（HMAC可选，标准JSON入站格式）
+│   │       └── cli.rs           # 本地 CLI 渠道（交互式 REPL）
+│   │   # ↓ Phase 9 规划（未实现）
+│   │   # whatsapp.rs   WhatsApp Business Cloud API（Meta Webhook）
+│   │   # email.rs      Email（IMAP+SMTP，async-imap + lettre）
+│   │   # matrix.rs     Matrix（Client-Server API，E2EE 可选，feature = "matrix"）
 │   │
 │   ├── adaclaw-memory/              # 记忆后端
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── factory.rs       # create_memory() 工厂
-│   │       ├── sqlite.rs        # SQLite + FTS5 + sqlite-vec + RRF
-│   │       ├── postgres.rs      # PostgreSQL (可选)
-│   │       ├── markdown.rs      # Markdown 文件存储
-│   │       ├── none.rs          # 显式禁用
+│   │       ├── sqlite.rs        # SQLite + FTS5 + sqlite-vec + RRF 混合检索
+│   │       ├── markdown.rs      # Markdown 文件存储（YAML front-matter）
+│   │       ├── none.rs          # 显式禁用（no-op backend）
+│   │       ├── global.rs        # GlobalMemory wrapper（全局共享知识库）
+│   │       ├── consolidation.rs # 记忆刷写整理（两阶段LLM去重合并）
+│   │       ├── query.rs         # QMD 查询分解（复杂查询→子查询→N路RRF）
+│   │       ├── topic.rs         # Topic 摘要辅助
 │   │       ├── embeddings/
 │   │       │   ├── mod.rs       # EmbeddingProvider trait
-│   │       │   ├── fastembed.rs # 本地推理 (AllMiniLML6V2)
-│   │       │   ├── openai.rs    # OpenAI text-embedding
-│   │       │   └── none.rs      # 无嵌入 (仅FTS5)
-│   │       └── rrf.rs           # Reciprocal Rank Fusion 算法
+│   │       │   ├── fastembed.rs # 本地推理（AllMiniLML6V2，384维，spawn_blocking）
+│   │       │   ├── openai.rs    # OpenAI text-embedding-3-small
+│   │       │   └── none.rs      # 无嵌入（降级为纯FTS5）
+│   │       └── rrf.rs           # Reciprocal Rank Fusion 算法（k=60，独立模块）
+│   │   # ↓ Phase 12 规划（闭源版本）
+│   │   # postgres.rs   PostgreSQL 后端（生产级分布式部署）
 │   │
 │   ├── adaclaw-tools/               # 工具实现
 │   │   └── src/
@@ -153,91 +160,85 @@ adaclaw/
 │   │       ├── shell.rs         # shell 命令执行
 │   │       ├── file.rs          # file_read / write / list / edit
 │   │       ├── memory_tools.rs  # memory_store / recall / forget
-│   │       ├── http.rs          # http_request
-│   │       ├── browser.rs       # browser_open (可选)
-│   │       ├── screenshot.rs    # 屏幕截图 (可选)
-│   │       ├── cron_tools.rs    # cron_add / list / remove / run
-│   │       ├── delegate.rs      # Agent 间任务委托
-│   │       ├── mcp/             # MCP (Model Context Protocol) 客户端
-│   │       │   ├── mod.rs       # McpClient + McpTool 包装器（实现 Tool trait）
-│   │       │   ├── loader.rs    # 启动时发现并注册 MCP tools 到 ToolRegistry
-│   │       │   ├── stdio.rs     # Stdio transport（本地进程，npx/uvx 启动）
-│   │       │   └── http.rs      # HTTP/SSE transport（远程 MCP Server）
-│   │       └── hardware/        # 硬件工具 (feature-gated)
-│   │           ├── gpio.rs
-│   │           └── arduino.rs
+│   │       └── http.rs          # http_request
+│   │   # ↓ Phase 10 规划（未实现）
+│   │   # mcp/             MCP 客户端（McpClient + McpTool，stdio + HTTP/SSE transport）
+│   │   # ↓ Phase 12 规划（闭源版本）
+│   │   # browser.rs       browser_open（可选，闭源版本）
+│   │   # screenshot.rs    屏幕截图（可选，闭源版本）
+│   │   # hardware/        GPIO / I2C / Arduino（feature-gated，闭源版本）
+│   │   # cron_tools.rs 工具形式调用 cron（cron 逻辑在 src/cron/ 主二进制中）
+│   │
+│   │   注：Agent 间委托工具（DelegateTool）在 src/agents/delegate.rs，不在此 crate
 │   │
 │   ├── adaclaw-security/            # 安全模块
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── policy.rs        # SecurityPolicy
+│   │       ├── sandbox.rs       # Sandbox 模块入口（pub mod workspace/landlock/docker）
 │   │       ├── sandbox/
-│   │       │   ├── mod.rs       # Sandbox trait
-│   │       │   ├── workspace.rs # 路径隔离 + 符号链接检测
-│   │       │   ├── landlock.rs  # Linux Landlock LSM
-│   │       │   └── docker.rs    # Docker 运行时沙盒
-│   │       ├── estop.rs         # 紧急停止 (4级)
-│   │       ├── otp.rs           # TOTP (HMAC-SHA256)
-│   │       ├── pairing.rs       # Gateway 配对码
+│   │       │   ├── workspace.rs # 路径隔离 + 符号链接检测 + 系统目录黑名单
+│   │       │   ├── landlock.rs  # Linux Landlock LSM（非Linux优雅降级）
+│   │       │   └── docker.rs    # 容器环境感知（is_running_in_container）
+│   │       ├── estop.rs         # 紧急停止 (4级：KillAll/NetworkKill/DomainBlock/ToolFreeze)
+│   │       ├── otp.rs           # TOTP (RFC 6238，HMAC-SHA1，无外部依赖)
 │   │       ├── secrets.rs       # ChaCha20-Poly1305 加密存储
-│   │       ├── scrub.rs         # 凭证脱敏 (SENSITIVE_KV_REGEX)
-│   │       ├── ratelimit.rs     # 速率限制
-│   │       ├── audit.rs         # 结构化审计日志
-│   │       └── approval.rs      # 工具执行审批
+│   │       ├── scrub.rs         # 凭证脱敏（26种模式正则）
+│   │       ├── ratelimit.rs     # 速率限制（per_user/channel/cost/actions）
+│   │       ├── audit.rs         # 结构化审计日志（JSONL，可接 SIEM）
+│   │       └── approval.rs      # 工具执行审批（AutonomyLevel: ReadOnly/Supervised/Full）
+│   │
+│   │   注：Gateway 配对码（Pairing）实现在 crates/adaclaw-server/src/pairing.rs
 │   │
 │   └── adaclaw-server/              # Gateway HTTP 服务
 │       └── src/
 │           ├── lib.rs
 │           ├── server.rs        # axum 服务器启动
 │           ├── routes/
+│           │   ├── mod.rs       # 路由注册
 │           │   ├── chat.rs      # POST /v1/chat
 │           │   ├── status.rs    # GET  /v1/status
 │           │   ├── stop.rs      # POST /v1/stop (Estop)
-│           │   ├── memory.rs    # GET/POST/DELETE /v1/memory
 │           │   └── metrics.rs   # GET /metrics (Prometheus)
-│           ├── ws.rs            # WebSocket 双向流
 │           ├── pairing.rs       # GET /pair (配对码)
 │           └── middleware.rs    # Auth / RateLimit / CORS
+│           # ↓ 规划中（未实现）
+│           # ws.rs              WebSocket 双向流
+│           # routes/memory.rs   GET/POST/DELETE /v1/memory
 │
 └── src/                         # 主二进制 crate
     ├── main.rs
     ├── config/
-    │   ├── mod.rs
-    │   ├── schema.rs            # 完整配置结构体
-    │   └── env.rs               # 环境变量覆盖
+    │   ├── mod.rs               # 配置加载入口（toml + 环境变量覆盖）
+    │   └── schema.rs            # 完整配置结构体（Config + 所有子配置）
     ├── bus/
-    │   ├── mod.rs
-    │   ├── message.rs           # InboundMessage / OutboundMessage
-    │   ├── router.rs            # AgentRouter + RoutingRule
-    │   └── queue.rs             # Bus 实例
+    │   ├── mod.rs               # MessageBus（mpsc sender + broadcast sender）
+    │   ├── router.rs            # AgentRouter + RoutingRule（3级优先级）
+    │   └── queue.rs             # Bus 实例 + send_inbound_bypass()
+    │   # 注：InboundMessage/OutboundMessage 类型定义在 mod.rs 中
     ├── agents/
     │   ├── mod.rs
-    │   ├── registry.rs          # AgentRegistry
-    │   ├── instance.rs          # AgentInstance 生命周期
-    │   ├── engine.rs            # Tool Call Loop (核心)
-    │   ├── parser.rs            # 工具调用多格式解析器
-    │   ├── compact.rs           # 历史压缩
-    │   └── context.rs           # AgentContext (单次对话)
+    │   ├── registry.rs          # AgentRegistry（批量创建 AgentInstance）
+    │   ├── instance.rs          # AgentInstance 生命周期（per-agent workspace/tools）
+    │   ├── engine.rs            # Tool Call Loop（核心：并行执行/去重/多格式解析）
+    │   ├── parser.rs            # 工具调用多格式解析器（OpenAI/XML/Markdown/GLM）
+    │   ├── compact.rs           # Congee 滚动摘要（rolling_compact）
+    │   └── delegate.rs          # DelegateTool（异步 Agent 间任务委托）
     ├── daemon/
     │   ├── mod.rs
-    │   ├── run.rs               # 守护进程主循环
+    │   ├── run.rs               # 守护进程主循环（集成所有子系统）
     │   └── reload.rs            # 热重载
     ├── cli/
-    │   ├── mod.rs
-    │   ├── run.rs               # adaclaw run
-    │   ├── chat.rs              # adaclaw chat (交互式)
-    │   ├── config.rs            # adaclaw config
-    │   ├── stop.rs              # adaclaw stop / estop
-    │   ├── status.rs            # adaclaw status
-    │   ├── doctor.rs            # adaclaw doctor
-    │   └── onboard.rs           # adaclaw onboard (引导向导)
+    │   ├── mod.rs               # CLI 入口（clap 子命令分发）
+    │   ├── doctor.rs            # adaclaw doctor（全系统诊断）
+    │   └── onboard.rs           # adaclaw onboard（引导向导）
+    │   # 注：chat/run/status/stop/config 等命令在 mod.rs 或 main.rs 中直接实现
     ├── observability/
-    │   ├── mod.rs
-    │   ├── noop.rs
-    │   ├── log.rs
-    │   ├── prometheus.rs
-    │   ├── otel.rs
-    │   └── trace.rs             # runtime_trace 结构化事件
+    │   ├── mod.rs               # create_observer() 工厂 + 全局 observer 单例
+    │   ├── noop.rs              # 零开销 noop 观察者
+    │   ├── log.rs               # tracing 日志观察者
+    │   ├── prometheus.rs        # Prometheus 指标（纯 atomic，8类指标）
+    │   └── trace.rs             # RuntimeTracer（结构化运行时事件，JSONL）
+    │   # 注：OpenTelemetry（otel.rs）规划中，feature-gated
     ├── skills/
     │   ├── mod.rs
     │   └── loader.rs            # SKILL.md 加载
@@ -458,7 +459,10 @@ adaclaw daemon start # 守护进程模式
 ```
 
 - **不依赖任何外部环境**，启动极快（目标 <50ms），内存占用极低（目标 <5MB）
-- 系统默认 `AutonomyLevel = Supervised`（学徒模式），工具执行前需人工确认
+- 系统默认 `AutonomyLevel = Supervised`（学徒模式）：
+  - **CLI 渠道**：工具执行前显示确认框（`y/N`），需要用户手动确认
+  - **消息渠道（Telegram/Discord 等）**：工具调用被**静默拒绝**，不打断用户，但 AI 无法执行操作。需改为 `Full` 才能在消息渠道中执行工具
+  - 个人用户建议配置 `autonomy_level = "full"` 以获得完整功能和无打断体验
 - 适合：日常使用、开发调试、`ReadOnly` / `Supervised` 级别场景
 
 #### 模式二：Docker 沙箱运行（可选，高级安全模式）
@@ -649,7 +653,7 @@ panic = "abort"
 | 本地嵌入 RRF | **✅ fastembed** | ✅ | ❌ | ❌ | ❌ |
 | 多 Agent 路由 | **✅ 配置驱动** | ❌ 无 | ✅ 7级优先 | ❌ 无 | ✅ session 式 |
 | Agent 委托 | **✅ 异步 delegate** | ❌ | ✅ spawn | ✅ spawn | ✅ sessions-spawn |
-| 安全纵深 7层 | **✅** | ✅ | 部分 | 基础 | 部分 |
+| 安全纵深 7层 | **✅** | 部分(4项) | 部分 | 基础 | 部分 |
 | Provider 注册表 | **✅ 数据驱动** | 部分 | 部分 | ✅ | ❌ |
 | Provider 熔断退避 | **✅ 指数退避+熔断** | ❌ | ✅ CooldownTracker | ❌ | ❌ |
 | 消息总线解耦 | **✅** | ❌ | ❌ | ✅ | ✅ |
@@ -671,4 +675,4 @@ panic = "abort"
 
 ---
 
-*最后更新：2026-02-26（新增 OpenRouter/DeepSeek、Category::Global、QMD 查询分解、Congee 滚动摘要、GlobalMemory、记忆刷写整理、历史会话索引）*
+*最后更新：2026-02-28（修正目录结构：删除不存在的 policy.rs/pairing.rs/message.rs/context.rs/otel.rs/env.rs 等幻影文件；补充 Phase 4-7 实际新增文件 base.rs/delegate.rs/global.rs/consolidation.rs/query.rs/topic.rs 等；区分 Phase 9/10/12 规划文件与已实现文件；修正 Supervised 模式在消息渠道的行为说明；修正竞品表 zeroclaw 安全项标注）*

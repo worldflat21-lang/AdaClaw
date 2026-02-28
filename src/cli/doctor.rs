@@ -223,7 +223,8 @@ pub async fn run_doctor() {
     }
 
     // ── Security ──────────────────────────────────────────────────────────────
-    let autonomy_level = AutonomyLevel::from_str(&cfg.security.autonomy_level);
+    let autonomy_level = cfg.security.autonomy_level.parse::<AutonomyLevel>()
+        .unwrap_or(AutonomyLevel::Supervised);
     if !cfg.security.allow_full_outside_container {
         if let Some(warning) = ContainerEnvironment::check_autonomy_safety(&autonomy_level) {
             warn(&format!("Security: {}", warning.message));

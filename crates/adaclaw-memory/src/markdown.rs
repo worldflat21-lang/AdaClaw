@@ -43,9 +43,7 @@ impl MarkdownMemory {
     fn key_to_path(&self, key: &str) -> PathBuf {
         // Sanitise: strip characters / sequences that could allow path traversal.
         let safe_key = key
-            .replace('/', "_")
-            .replace('\\', "_")
-            .replace('\0', "_")
+            .replace(['/', '\\', '\0'], "_")
             .replace("..", "__");
         let safe_key = safe_key.trim_matches(|c| c == '_' || c == '.').to_string();
         let safe_key = if safe_key.is_empty() { "_".to_string() } else { safe_key };

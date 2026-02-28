@@ -1,63 +1,191 @@
-# AdaClaw Example Configuration File
-# Save as config.toml
+# AdaClaw configuration file
+# Copy to config.toml and edit: cp config.example.toml config.toml
+#
+# Quick start: run `adaclaw onboard` to generate this file interactively.
+# Docs: https://github.com/worldflat21-lang/AdaClaw
 
-[system]
-# Define the environment: development, production
-env = "development"
-log_level = "info"
+# ── Providers ──────────────────────────────────────────────────────────────────
+# At least one provider must be configured (or set API key env var).
+# Supported: openai, anthropic, openrouter, deepseek, ollama
 
-[providers]
-openai = { api_key = "sk-..." }
-anthropic = { api_key = "sk-ant-..." }
-ollama = { base_url = "http://localhost:11434" }
+[providers.openrouter]
+api_key = "sk-or-..."              # Or env var: OPENROUTER_API_KEY
+default_model = "anthropic/claude-3.5-sonnet"
+timeout_secs = 60
+
+# [providers.openai]
+# api_key = "sk-..."               # Or env var: OPENAI_API_KEY
+# default_model = "gpt-4o"
+# # base_url = "https://api.openai.com/v1"  # custom endpoint (optional)
+# timeout_secs = 60
+
+# [providers.anthropic]
+# api_key = "sk-ant-..."           # Or env var: ANTHROPIC_API_KEY
+# default_model = "claude-3-5-sonnet-20241022"
+
+# [providers.deepseek]
+# api_key = "sk-..."               # Or env var: DEEPSEEK_API_KEY
+# default_model = "deepseek-chat"
+
+# [providers.ollama]
+# base_url = "http://localhost:11434"
+# default_model = "llama3"
+
+# ── Agents ─────────────────────────────────────────────────────────────────────
+# Each agent maps to a provider and can have its own tools/workspace.
 
 [agents.assistant]
-model = "openrouter/auto"
-description = "Helpful AI Assistant"
-# Default tools allowed
-tools = ["shell", "file_read", "file_write", "http_request"]
-
-[agents.coder]
-model = "anthropic/claude-3-5-sonnet-20241022"
-temperature = 0.2
-tools = ["shell", "file_read", "file_write"]
-workspace = "~/.adaclaw/workspace-coder"
+provider = "openrouter"
+model = "anthropic/claude-3.5-sonnet"
+temperature = 0.7                  # 0.0 = deterministic, 1.0 = creative
+max_iterations = 10                # max tool call loops per turn
+# tools = []                       # empty = allow all; or list: ["shell", "file_read"]
+# workspace = "~/.adaclaw/workspace-assistant"
+# system_extra = "You are a helpful assistant."
 
 [agents.assistant.subagents]
-allow = ["coder"]
+allow = ["coder"]                  # agents this agent can delegate to; [] = no delegation
 
-[channels.cli]
-enabled = true
+# [agents.coder]
+# provider = "anthropic"
+# model = "claude-3-5-sonnet-20241022"
+# temperature = 0.2
+# tools = ["shell", "file_read", "file_write", "file_list"]
+# workspace = "~/.adaclaw/workspace-coder"
+#
+# [agents.coder.subagents]
+# allow = []                       # coder cannot delegate (prevents recursion)
 
-[channels.telegram]
-enabled = false
-bot_token = "YOUR_BOT_TOKEN"
-allow_from = ["your_username"]
+# ── Channels ───────────────────────────────────────────────────────────────────
+# CLI channel is always active (no config needed).
 
-[routing]
-[[routing.rules]]
-channel_pattern = "telegram:.*"
-agent = "assistant"
+# [channels.telegram]
+# kind = "telegram"
+# token = "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
+# allow_from = ["your_username", "123456789"]       # empty = allow all
+# allow_from_groups = []                            # group whitelist
+# require_mention = false                           # require @botname in groups
 
-[[routing.rules]]
+# [channels.discord]
+# kind = "discord"
+# token = "Bot YOUR_BOT_TOKEN"
+# allow_from = []
+
+# [channels.slack]
+# kind = "slack"
+# token = "xoxb-..."
+# webhook_secret = "..."            # Signing Secret (from Slack App settings)
+# [channels.slack.extra]
+# webhook_port = "9004"
+# webhook_path = "/webhook/slack"
+
+# [channels.dingtalk]
+# kind = "dingtalk"
+# webhook_secret = "SEC..."         # 安全密钥
+# [channels.dingtalk.extra]
+# webhook_port = "9001"
+# webhook_path = "/webhook/dingtalk"
+
+# [channels.feishu]
+# kind = "feishu"
+# [channels.feishu.extra]
+# webhook_port = "9002"
+# webhook_path = "/webhook/feishu"
+# app_id = "cli_xxx"
+# app_secret = "yyy"
+# verification_token = "zzz"
+
+# [channels.wecom]
+# kind = "wechat_work"
+# token = "your_token"
+# [channels.wecom.extra]
+# webhook_port = "9003"
+# webhook_path = "/webhook/wecom"
+# encoding_aes_key = "..."         # 43 characters Base64
+
+# [channels.webhook]
+# kind = "webhook"
+# webhook_secret = "my-secret"    # HMAC-SHA256 signing (optional)
+# [channels.webhook.extra]
+# webhook_port = "9005"
+# webhook_path = "/webhook/custom"
+# outbound_url = "https://your-system.com/reply"   # optional callback
+
+# ── Routing ────────────────────────────────────────────────────────────────────
+# Route messages to specific agents. Evaluated in order; first match wins.
+# Priority: channel_pattern > sender_id > default
+
+# Route Telegram @dev_bot to the coder agent
+# [[routing]]
+# channel_pattern = "telegram:@dev_bot"
+# agent = "coder"
+
+# Route a specific user to coder
+# [[routing]]
+# sender_id = "123456789"
+# agent = "coder"
+
+# Default: everything goes to assistant
+[[routing]]
 default = true
 agent = "assistant"
 
+# ── Memory ─────────────────────────────────────────────────────────────────────
+
 [memory]
-provider = "sqlite"
-path = "memory.db"
-# Options: none, fastembed, openai
-embedding_provider = "fastembed"
+backend = "sqlite"                 # options: sqlite, markdown, none
+path = "memory.db"                 # file path for sqlite or markdown directory
+embedding_provider = "none"        # options: none, fastembed (local), openai
+# embed_api_key = "sk-..."         # required if embedding_provider = "openai"
+# embed_base_url = "..."           # optional custom OpenAI-compatible endpoint
+# vector_weight = 0.6              # RRF weight for vector search (0.0–1.0)
+# keyword_weight = 0.4             # RRF weight for FTS5 keyword search
+# ttl_days = 90                    # days before memory entries expire (0 = never)
+
+# ── Security ───────────────────────────────────────────────────────────────────
 
 [security]
-autonomy_level = "Supervised" # ReadOnly, Supervised, Full
-allow_full_outside_container = false
+# Autonomy level: readonly | supervised | full
+# - readonly:   no tool execution
+# - supervised: CLI prompts before each tool call (default)
+# - full:       fully autonomous — use Docker in production!
+autonomy_level = "supervised"
+
+workspace = "./workspace"          # AI's sandboxed working directory
+# allowlist = []                   # global sender whitelist (empty = allow all)
+# allow_full_outside_container = false  # suppress container warning for Full mode
 
 [security.rate_limit]
-per_user_per_minute = 10
-daily_cost_budget = 5.0 # USD
+per_user = 60                      # messages per user per minute
+per_channel = 200                  # messages per channel per minute
+max_actions_per_hour = 100         # tool calls per hour (0 = unlimited)
+daily_cost_budget_usd = 10.0       # USD per day limit (0 = unlimited)
+
+# audit_log = ".adaclaw/audit.jsonl"        # structured audit log (SIEM-ready)
+# estop_state_path = ".adaclaw/estop.json"  # emergency stop state persistence
+# require_otp_for_estop = false             # require TOTP to clear estop
+
+# ── Gateway ────────────────────────────────────────────────────────────────────
+# HTTP API gateway (REST + Prometheus metrics endpoint)
+
+[gateway]
+bind = "127.0.0.1:8080"           # NEVER bind to 0.0.0.0 without a reverse proxy
+# bearer_token = "change-me-please"  # required for /v1/chat and /v1/stop
+
+# ── Tunnel (optional) ──────────────────────────────────────────────────────────
+# Expose the local gateway to the internet for webhooks.
+# Options: none | cloudflare | ngrok | tailscale
+
+[tunnel]
+provider = "none"                  # set to "cloudflare", "ngrok", or "tailscale"
+# cloudflare_token = "..."         # Cloudflare Tunnel token (cloudflared)
+# ngrok_token = "..."              # ngrok auth token
+# ngrok_domain = "my-app.ngrok-free.app"  # optional fixed domain
+# tailscale_funnel = false         # use Tailscale Funnel (requires tailscale daemon)
+
+# ── Observability ──────────────────────────────────────────────────────────────
 
 [observability]
-metrics_enabled = true
-metrics_port = 9090
-trace_enabled = true
+backend = "log"                    # options: noop, log, prometheus
+# runtime_trace_path = ".adaclaw/runtime-trace.jsonl"   # JSONL event log
+# runtime_trace_max_entries = 1000                       # rolling window size (0 = unlimited)

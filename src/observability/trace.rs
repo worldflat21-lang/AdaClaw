@@ -109,6 +109,7 @@ impl RuntimeTracer {
     }
 
     /// Convenience: record a simple event from individual fields.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_simple(
         &self,
         event_type: &str,

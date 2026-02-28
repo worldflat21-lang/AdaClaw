@@ -110,6 +110,7 @@ impl AgentEngine {
     }
 
     /// Run the tool-call loop with full options.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_tool_loop_with_options(
         &self,
         provider: &dyn Provider,

@@ -209,9 +209,9 @@ impl AgentInstance {
 
 /// 展开 `~` 前缀为用户主目录。
 fn expand_tilde(path: &str) -> String {
-    if path.starts_with('~') {
+    if let Some(stripped) = path.strip_prefix('~') {
         let home = home_dir();
-        format!("{}{}", home, &path[1..])
+        format!("{}{}", home, stripped)
     } else {
         path.to_string()
     }

@@ -7,6 +7,7 @@
 //! 3. 监听 MESSAGE_CREATE 事件，过滤 Bot 消息，发布到 MessageBus
 //! 4. `send()` 方法通过 REST API 回复消息
 //! 5. 断线自动重连（指数退避）
+//! 6. **持续 Typing 循环**：每 8 秒刷新 typing，Discord 的 typing 也是 5s 过期
 //!
 //! # 配置示例
 //!
@@ -45,6 +46,8 @@ pub struct DiscordChannel {
     token: String,
     intents: u64,
     client: reqwest::Client,
+    /// channel_id → typing loop task handle（持续刷新 typing，直到回复发出）
+    typing_tasks: Arc<tokio::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl DiscordChannel {
@@ -59,6 +62,7 @@ impl DiscordChannel {
             token,
             intents: intents.unwrap_or(DEFAULT_INTENTS),
             client,
+            typing_tasks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -67,6 +71,44 @@ impl DiscordChannel {
             self.token.clone()
         } else {
             format!("Bot {}", self.token)
+        }
+    }
+
+    // ── Typing 循环 ───────────────────────────────────────────────────────────
+
+    /// 启动持续 typing 循环（每 8 秒刷新）
+    ///
+    /// Discord 的 typing 指示器 5 秒后过期，须持续刷新。
+    /// 收到用户消息时启动，发出回复时停止。
+    async fn start_typing_loop(&self, channel_id: &str) {
+        self.stop_typing_loop(channel_id).await;
+
+        let client = self.client.clone();
+        let url = format!("{}/channels/{}/typing", DISCORD_API, channel_id);
+        let auth = self.auth_header();
+
+        let handle = tokio::spawn(async move {
+            loop {
+                // Discord typing POST 不需要 body
+                let _ = client
+                    .post(&url)
+                    .header("Authorization", &auth)
+                    .header("Content-Length", "0")
+                    .send()
+                    .await;
+                tokio::time::sleep(Duration::from_secs(8)).await;
+            }
+        });
+
+        let mut tasks = self.typing_tasks.lock().await;
+        tasks.insert(channel_id.to_string(), handle);
+    }
+
+    /// 停止指定 channel 的 typing 循环
+    async fn stop_typing_loop(&self, channel_id: &str) {
+        let mut tasks = self.typing_tasks.lock().await;
+        if let Some(handle) = tasks.remove(channel_id) {
+            handle.abort();
         }
     }
 
@@ -169,6 +211,9 @@ impl Channel for DiscordChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         let channel_id = &msg.target_session_id;
+        // 停止该 channel 的 typing 循环
+        self.stop_typing_loop(channel_id).await;
+
         let content = match &msg.content {
             MessageContent::Text(t) => t.clone(),
             _ => return Ok(()),
@@ -178,6 +223,11 @@ impl Channel for DiscordChannel {
 
     async fn stop(&self) -> Result<()> {
         self.base.set_running(false);
+        // 停止所有 typing 循环
+        let mut tasks = self.typing_tasks.lock().await;
+        for (_, handle) in tasks.drain() {
+            handle.abort();
+        }
         Ok(())
     }
 }
@@ -205,11 +255,8 @@ impl DiscordChannel {
         let intents = self.intents;
         let token = self.token.clone();
         let base = &self.base;
-        let client = &self.client;
 
-        let mut heartbeat_interval_ms: Option<u64> = None;
         let mut heartbeat_handle: Option<tokio::task::JoinHandle<()>> = None;
-        let mut seq: Option<i64> = None;
 
         while base.is_running() {
             let msg = tokio::time::timeout(Duration::from_secs(120), reader.next())
@@ -225,7 +272,7 @@ impl DiscordChannel {
             let text = match raw_msg {
                 Message::Text(t) => t,
                 Message::Close(_) => return Ok(()),
-                Message::Ping(d) => {
+                Message::Ping(_) => {
                     // 自动 Pong
                     let _ = tx.send(
                         serde_json::to_string(&json!({ "op": 1, "d": null })).unwrap_or_default()
@@ -251,10 +298,8 @@ impl DiscordChannel {
                 .to_string();
             let data = payload.get("d");
 
-            // 更新序列号
-            if let Some(s) = payload.get("s").and_then(|v| v.as_i64()) {
-                seq = Some(s);
-            }
+            // 更新序列号（当前实现不使用 seq，将来 RESUME 时需要）
+            let _ = payload.get("s").and_then(|v| v.as_i64());
 
             match op {
                 // HELLO
@@ -263,7 +308,6 @@ impl DiscordChannel {
                         .and_then(|d| d.get("heartbeat_interval"))
                         .and_then(|v| v.as_u64())
                         .unwrap_or(45000);
-                    heartbeat_interval_ms = Some(interval);
 
                     // 发送 IDENTIFY
                     let identify = json!({
@@ -397,6 +441,9 @@ impl DiscordChannel {
             preview = %content.chars().take(60).collect::<String>(),
             "Discord message received"
         );
+
+        // 启动持续 typing 循环（在白名单检查之前就启动，给用户及时反馈）
+        self.start_typing_loop(&channel_id).await;
 
         let mut metadata: HashMap<String, Value> = HashMap::new();
         metadata.insert("message_id".to_string(), Value::String(message_id));

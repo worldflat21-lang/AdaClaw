@@ -251,10 +251,9 @@ impl TopicManager {
         if let Some((existing_id, _)) = best {
             existing_id.clone()
         } else {
-            let new_id = Uuid::new_v4().to_string();
             // We can't add to known_topics here because we hold the lock.
             // The engine layer is responsible for registering the new topic.
-            new_id
+            Uuid::new_v4().to_string()
         }
     }
 

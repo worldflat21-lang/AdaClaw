@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  clippy:
+    name: Clippy (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all
+
+  size-check:
+    name: Binary Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release
+      - name: Check binary size
+        run: |
+          SIZE=$(stat -c%s target/release/adaclaw 2>/dev/null || stat -f%z target/release/adaclaw)
+          SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc)
+          echo "Binary size: ${SIZE_MB} MB"
+          if [ "$SIZE" -gt "10485760" ]; then
+            echo "::warning::Binary size ${SIZE_MB} MB exceeds 10 MB target"
+          else
+            echo "✅ Binary size ${SIZE_MB} MB is within 10 MB target"
+          fi
+
+  fmt:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check

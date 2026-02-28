@@ -47,6 +47,32 @@ enum Commands {
     Doctor,
     /// Run the interactive setup wizard
     Onboard,
+    /// Manage skills (list, install, remove, audit)
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillAction {
+    /// List installed skills
+    List,
+    /// Install a skill from URL or clawhub:<name>
+    Install {
+        /// URL, clawhub:<name>, or local path
+        source: String,
+    },
+    /// Remove an installed skill
+    Remove {
+        /// Skill name to remove
+        name: String,
+    },
+    /// Run security audit on a skill
+    Audit {
+        /// Skill name to audit
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -89,6 +115,30 @@ async fn main() -> anyhow::Result<()> {
         Commands::Onboard => {
             cli::onboard::run_onboard().await;
         }
+
+        Commands::Skill { action } => match action {
+            SkillAction::List => {
+                cli::skill::cmd_list();
+            }
+            SkillAction::Install { source } => {
+                if let Err(e) = cli::skill::cmd_install(source).await {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            SkillAction::Remove { name } => {
+                if let Err(e) = cli::skill::cmd_remove(name) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            SkillAction::Audit { name } => {
+                if let Err(e) = cli::skill::cmd_audit(name) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        },
     }
 
     Ok(())

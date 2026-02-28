@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn test_get_default_fallback_to_first() {
         // "assistant" not in registry but "coder" is
-        let mut reg = AgentRegistry::new("assistant");
+        let reg = AgentRegistry::new("assistant");
         // We can't easily create AgentInstance in tests without a real provider,
         // so we just verify the fallback logic path doesn't panic when empty
         assert!(reg.get_default().is_none());

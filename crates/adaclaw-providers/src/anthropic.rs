@@ -1,6 +1,7 @@
 use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
+use crate::error::ProviderError;
 use crate::registry::ProviderSpec;
 use reqwest::Client;
 use serde_json::Value;
@@ -67,7 +68,7 @@ impl Provider for AnthropicProvider {
         let key = self
             .key
             .as_deref()
-            .ok_or_else(|| anyhow!("Anthropic API key not set"))?;
+            .ok_or_else(|| anyhow::anyhow!("Anthropic API key not set"))?;
 
         let resp = self
             .client
@@ -79,9 +80,19 @@ impl Provider for AnthropicProvider {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
+            // 在消费 body 之前先提取 Retry-After 头
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("Anthropic API error {}: {}", status, text));
+            return Err(anyhow::Error::new(ProviderError::from_status(
+                status,
+                &text,
+                retry_after,
+            )));
         }
 
         let data: Value = resp.json().await?;

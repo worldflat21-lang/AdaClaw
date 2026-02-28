@@ -1,3 +1,4 @@
+pub mod error;
 pub mod registry;
 pub mod router;
 pub mod reliable;
@@ -6,3 +7,4 @@ pub mod anthropic;
 pub mod ollama;
 pub mod openrouter;
 pub mod deepseek;
+pub mod groq;

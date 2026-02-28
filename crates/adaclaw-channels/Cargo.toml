@@ -3,6 +3,11 @@ name = "adaclaw-channels"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Matrix Client-Server API 支持（使用 reqwest 实现，无额外依赖）
+matrix = []
+
 [dependencies]
 adaclaw-core = { path = "../adaclaw-core" }
 anyhow = "1.0"
@@ -21,7 +26,7 @@ sha2 = "0.10.9"
 hex = "0.4.3"
 regex = "1.10"
 
-# ── Webhook channels (DingTalk, Feishu, WeCom, Slack, generic) ───────────────
+# ── Webhook channels (DingTalk, Feishu, WeCom, Slack, generic, WhatsApp) ──────
 axum = "0.7"
 tokio-util = "0.7"
 
@@ -36,3 +41,16 @@ sha1 = "0.10"
 
 # ── DingTalk timestamp signing ────────────────────────────────────────────────
 chrono = "0.4"
+
+# ── Email channel (IMAP polling + SMTP) ───────────────────────────────────────
+# imap：同步 IMAP 客户端 v2（stable），via spawn_blocking
+imap = "2.4"
+# native-tls：imap::connect 需要显式传入 TlsConnector
+native-tls = "0.2"
+# mailparse：MIME/RFC822 邮件解析
+mailparse = "0.14"
+# lettre：同步 SMTP 发信
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "native-tls", "builder"] }
+
+# ── URL encoding（Matrix channel 路径编码）────────────────────────────────────
+urlencoding = "2.1"

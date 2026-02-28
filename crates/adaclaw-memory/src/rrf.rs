@@ -1,10 +1,10 @@
-/// Reciprocal Rank Fusion (RRF)
-///
-/// Merges multiple ranked lists into a single ranked list.
-/// Formula: score(d) = Σ 1/(k + rank(d))  where k is a smoothing constant (default 60).
-///
-/// Reference: Cormack, G.V. et al. (2009). "Reciprocal Rank Fusion outperforms Condorcet
-/// and individual rank learning methods." SIGIR 2009.
+//! Reciprocal Rank Fusion (RRF)
+//!
+//! Merges multiple ranked lists into a single ranked list.
+//! Formula: score(d) = Σ 1/(k + rank(d))  where k is a smoothing constant (default 60).
+//!
+//! Reference: Cormack, G.V. et al. (2009). "Reciprocal Rank Fusion outperforms Condorcet
+//! and individual rank learning methods." SIGIR 2009.
 
 /// A single result item with its merged RRF score.
 #[derive(Debug, Clone)]

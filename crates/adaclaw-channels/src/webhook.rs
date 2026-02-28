@@ -95,7 +95,9 @@ struct WebhookState {
     base: Arc<BaseChannel>,
     hmac_secret: Option<String>,
     bus: Arc<dyn MessageBus>,
+    #[allow(dead_code)]
     http_client: reqwest::Client,
+    #[allow(dead_code)]
     outbound_url: Option<String>,
 }
 

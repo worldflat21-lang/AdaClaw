@@ -1,0 +1,39 @@
+name: Security Audit
+
+on:
+  # Run on every PR to main
+  pull_request:
+    branches: [main]
+  # Run weekly (Tuesday 08:00 UTC)
+  schedule:
+    - cron: '0 8 * * 2'
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run security audit
+        run: cargo audit
+        # Don't fail the workflow on advisories that are just informational
+        # but do fail on actual vulnerabilities
+        env:
+          CARGO_AUDIT_DENY: vulnerability
+
+  deny:
+    name: cargo deny (license + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-deny check
+        uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check advisories licenses sources
+        # Continue on error — advisories are informational in PRs
+        continue-on-error: true

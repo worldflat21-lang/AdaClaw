@@ -30,15 +30,14 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
-use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // ── 钉钉消息结构 ──────────────────────────────────────────────────────────────
 
@@ -85,6 +84,7 @@ struct DingTalkState {
     base: Arc<BaseChannel>,
     webhook_secret: Option<String>,
     bus: Arc<dyn MessageBus>,
+    #[allow(dead_code)]
     http_client: reqwest::Client,
 }
 
@@ -124,9 +124,10 @@ impl DingTalkChannel {
         }
     }
 
-    /// 验证钉钉 Outgoing Webhook 签名
+    /// 验证钉钉 Outgoing Webhook 签名（备用，实际验证由 axum handler 内联执行）
     ///
     /// sign = base64(HMAC-SHA256(timestamp + "\n" + secret, secret))
+    #[allow(dead_code)]
     fn verify_signature(
         &self,
         timestamp: &str,

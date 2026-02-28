@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::info;
-use uuid::Uuid;
 
 pub struct CliChannel {
     base: BaseChannel,

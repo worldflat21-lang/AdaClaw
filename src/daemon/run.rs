@@ -20,7 +20,8 @@ use crate::agents::instance::AgentInstance;
 use crate::agents::registry::AgentRegistry;
 use crate::bus::queue::AppMessageBus;
 use crate::bus::router::AgentRouter;
-use crate::config::schema::{AgentConfig, Config};
+use crate::config::schema::{AgentConfig, Config, McpServerConfig as SchemaMcpServerConfig};
+use crate::cron::scheduler::HeartbeatScheduler;
 use crate::observability::{self, ObserverEvent};
 use adaclaw_channels::manager::ChannelManager;
 use adaclaw_core::channel::{InboundMessage, MessageBus, MessageContent, OutboundMessage};
@@ -64,9 +65,9 @@ pub async fn start_daemon() -> Result<()> {
     // ── 2. 安全子系统初始化 ────────────────────────────────────────────────────
 
     // 2a. 容器环境检测（Full 模式下警告）
-    let autonomy_level = adaclaw_security::approval::AutonomyLevel::from_str(
-        &config.security.autonomy_level,
-    );
+    let autonomy_level = config.security.autonomy_level
+        .parse::<adaclaw_security::approval::AutonomyLevel>()
+        .unwrap_or(adaclaw_security::approval::AutonomyLevel::Supervised);
     if !config.security.allow_full_outside_container {
         if let Some(warning) =
             ContainerEnvironment::check_autonomy_safety(&autonomy_level)
@@ -208,19 +209,47 @@ pub async fn start_daemon() -> Result<()> {
         }
     }
 
-    if providers.is_empty() {
-        if std::env::var("OPENAI_API_KEY").is_ok()
-            || std::env::var("ADACLAW_OPENAI_API_KEY").is_ok()
-        {
-            let key = std::env::var("OPENAI_API_KEY")
-                .or_else(|_| std::env::var("ADACLAW_OPENAI_API_KEY"))
-                .ok();
-            if let Ok(p) = create_provider("openai", key.as_deref(), None) {
-                info!("Auto-detected OpenAI provider from env");
-                providers.insert("openai".to_string(), Arc::from(p));
-            }
+    if providers.is_empty()
+        && (std::env::var("OPENAI_API_KEY").is_ok()
+            || std::env::var("ADACLAW_OPENAI_API_KEY").is_ok())
+    {
+        let key = std::env::var("OPENAI_API_KEY")
+            .or_else(|_| std::env::var("ADACLAW_OPENAI_API_KEY"))
+            .ok();
+        if let Ok(p) = create_provider("openai", key.as_deref(), None) {
+            info!("Auto-detected OpenAI provider from env");
+            providers.insert("openai".to_string(), Arc::from(p));
         }
     }
+
+    // ── Phase 10: MCP 工具加载 ─────────────────────────────────────────────────
+    let mcp_tools: Arc<Vec<adaclaw_tools::mcp::McpTool>> = if !config.tools.mcp_servers.is_empty() {
+        info!(servers = config.tools.mcp_servers.len(), "Loading MCP servers...");
+        let loader_configs: std::collections::HashMap<String, adaclaw_tools::mcp::loader::McpServerConfig> =
+            config.tools.mcp_servers.iter().map(|(name, cfg)| {
+                let lc = match cfg {
+                    SchemaMcpServerConfig::Stdio { command, args, env, tool_timeout } =>
+                        adaclaw_tools::mcp::loader::McpServerConfig::Stdio {
+                            command: command.clone(),
+                            args: args.clone(),
+                            env: env.clone(),
+                            tool_timeout: *tool_timeout,
+                        },
+                    SchemaMcpServerConfig::Http { url, headers, tool_timeout } =>
+                        adaclaw_tools::mcp::loader::McpServerConfig::Http {
+                            url: url.clone(),
+                            headers: headers.clone(),
+                            tool_timeout: *tool_timeout,
+                        },
+                };
+                (name.clone(), lc)
+            }).collect();
+        let mcp_vec = adaclaw_tools::mcp::loader::McpLoader::load_all_clonable(&loader_configs).await;
+        info!(tools = mcp_vec.len(), "MCP tools ready");
+        Arc::new(mcp_vec)
+    } else {
+        Arc::new(vec![])
+    };
 
     // ── 6. 构建 AgentRegistry（含 AgentInstance） ──────────────────────────────
     let mut agents_map = config.agents.clone();
@@ -460,6 +489,37 @@ pub async fn start_daemon() -> Result<()> {
         None
     };
 
+    // ── Phase 10: Heartbeat 调度器 ─────────────────────────────────────────────
+    if config.heartbeat.enabled {
+        let heartbeat_scheduler = HeartbeatScheduler::new(
+            config.heartbeat.clone(),
+            config
+                .security
+                .workspace
+                .as_deref()
+                .unwrap_or("workspace")
+                .to_string(),
+        );
+        let bus_heartbeat: Arc<dyn MessageBus> = Arc::clone(&bus) as Arc<dyn MessageBus>;
+        let cancel_hb = cancel.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                res = heartbeat_scheduler.start(bus_heartbeat) => {
+                    if let Err(e) = res {
+                        error!("Heartbeat scheduler error: {}", e);
+                    }
+                }
+                _ = cancel_hb.cancelled() => {
+                    info!("Heartbeat scheduler shutting down");
+                }
+            }
+        });
+        info!(
+            interval_mins = config.heartbeat.interval_minutes,
+            "Heartbeat scheduler started"
+        );
+    }
+
     // ── 11. Agent 调度循环 ───────────────────────────────────────────────────────
     let cancel_agent = cancel.clone();
     let observer_clone = Arc::clone(&observer);
@@ -474,6 +534,7 @@ pub async fn start_daemon() -> Result<()> {
         audit_logger,
         observer_clone,
         tracer_clone,
+        Arc::clone(&mcp_tools),
         cancel_agent,
     ));
 
@@ -508,6 +569,7 @@ async fn agent_dispatch_loop(
     audit_logger: Option<Arc<AuditLogger>>,
     observer: Arc<dyn observability::Observer>,
     tracer: Option<Arc<crate::observability::RuntimeTracer>>,
+    mcp_tools: Arc<Vec<adaclaw_tools::mcp::McpTool>>,
     cancel: CancellationToken,
 ) {
     loop {
@@ -617,8 +679,14 @@ async fn agent_dispatch_loop(
                     }
                 };
 
-                // ── 构建工具列表：基础工具 + 可选 DelegateTool ───────────────
+                // ── 构建工具列表：基础工具 + MCP 工具 + 可选 DelegateTool ────
                 let mut tools = instance.build_tools();
+
+                // Phase 10: 注入 MCP 工具（透明包装，与原生工具同等对待）
+                for mcp_tool in mcp_tools.iter() {
+                    tools.push(Box::new(mcp_tool.clone()));
+                }
+
                 if instance.can_delegate() {
                     tools.push(Box::new(DelegateTool::new(
                         instance.agent_id.clone(),

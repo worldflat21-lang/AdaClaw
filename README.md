@@ -1,4 +1,6 @@
-# AdaClaw ⚡
+<div align="center">
+  <h1><img src="assets/Ada103iow103.png" width="36" alt="Ada" valign="middle"> AdaClaw ⚡</h1>
+</div>
 
 <div align="center">
   <p><strong>Lightweight, secure, multi-channel AI Agent Runtime — written in Rust</strong></p>

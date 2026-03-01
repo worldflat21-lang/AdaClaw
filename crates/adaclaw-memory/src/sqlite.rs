@@ -1,20 +1,40 @@
 use adaclaw_core::memory::{Category, Memory, MemoryEntry, RecallScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+// Phase 14-P2-1: r2d2 SQLite connection pool (multiple readers, WAL-safe writers)
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
-use std::sync::{Arc, Mutex};
 
 use crate::embeddings::EmbeddingProvider;
+use std::sync::Arc;
 
 #[cfg(feature = "sqlite-vec")]
 use crate::embeddings::vec_to_bytes;
 #[cfg(feature = "sqlite-vec")]
 use crate::rrf::rrf_merge;
 
+// ── Time constants (Phase 14-P3-2: no magic numbers) ─────────────────────────
+
+/// Number of seconds in one calendar day.
+///
+/// Used for TTL-based memory hygiene calculations.
+/// Named constant rather than the magic literal `86_400`.
+const SECONDS_PER_DAY: i64 = 24 * 60 * 60; // = 86_400
+
 // ── SqliteMemory ──────────────────────────────────────────────────────────────
 
+/// SQLite-backed memory store with optional vector (KNN) and FTS5 search.
+///
+/// Phase 14-P2-1: Uses a `r2d2` connection pool instead of a single
+/// `Arc<Mutex<Connection>>`.  Benefits:
+/// - Multiple concurrent readers (SQLite WAL mode)
+/// - Pool size 1 for `:memory:` databases (safe in-memory isolation)
+/// - Pool size 4 for file databases (concurrent reads, serialised writes)
 pub struct SqliteMemory {
-    conn: Arc<Mutex<Connection>>,
+    /// Phase 14-P2-1: r2d2 connection pool.
+    /// `Pool<M>: Clone` — the pool handle can be cheaply shared across threads.
+    pool: Pool<SqliteConnectionManager>,
     /// Optional embedding provider. When `None` (or dim==0), recall falls back
     /// to pure FTS5 keyword search.
     embedder: Option<Arc<dyn EmbeddingProvider>>,
@@ -22,14 +42,12 @@ pub struct SqliteMemory {
     embed_dim: usize,
 }
 
-impl Default for SqliteMemory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SqliteMemory {
-    /// Create an in-memory database (useful for tests / NoneMemory fallback)
+    /// Create an in-memory database (useful for tests / NoneMemory fallback).
+    ///
+    /// Uses pool size 1 so all operations share the same in-memory database
+    /// (each connection to `:memory:` creates an independent database, but with
+    /// pool size 1 the pool always reuses the single pre-created connection).
     pub fn new() -> Self {
         Self::open(":memory:", None).expect("Failed to create in-memory SQLite database")
     }
@@ -38,11 +56,11 @@ impl SqliteMemory {
     ///
     /// `embedder` — optional embedding provider; pass `None` for FTS5-only mode.
     pub fn open(path: &str, embedder: Option<Arc<dyn EmbeddingProvider>>) -> Result<Self> {
-        // ── Load sqlite-vec extension ──────────────────────────────────────
+        // ── Register sqlite-vec extension globally ─────────────────────────
         //
-        // sqlite_vec must be registered before opening the connection so that
-        // `vec0` virtual tables are available.  We use sqlite3_auto_extension
-        // which installs the init function for every connection in this process.
+        // sqlite3_auto_extension is a process-global call — registering the same
+        // extension multiple times is safe and idempotent.  Must be called before
+        // any connections are created so the extension is available in `with_init`.
         //
         // SAFETY: sqlite3_vec_init is a valid SQLite extension init function;
         // the transmute from a typed fn pointer to the generic *const () is the
@@ -54,84 +72,33 @@ impl SqliteMemory {
             )));
         }
 
-        let conn = Connection::open(path)?;
         let embed_dim = embedder.as_ref().map(|e| e.dim()).unwrap_or(0);
 
-        // ── Schema version 1: base tables ────────────────────────────────────
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA foreign_keys=ON;
+        // ── Build connection pool ─────────────────────────────────────────
+        //
+        // For `:memory:` databases, max_size=1 ensures all callers share the
+        // same connection slot (and thus the same in-memory database).
+        //
+        // For file databases, max_size=4 allows concurrent readers under WAL.
+        // Writers should use `BEGIN IMMEDIATE` (which we do for `hygiene` and
+        // `session_store::compact`).
+        let is_memory = path == ":memory:";
+        let embed_dim_for_init = embed_dim;
 
-             -- Main key-value memory table
-             CREATE TABLE IF NOT EXISTS memory (
-                 key         TEXT    PRIMARY KEY,
-                 content     TEXT    NOT NULL,
-                 category    TEXT    NOT NULL DEFAULT 'Daily',
-                 session     TEXT,
-                 topic       TEXT,
-                 created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                 updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-             );
-
-             -- Topic registry — one row per known topic.
-             -- Used by TopicManager to search for reusable topic IDs.
-             CREATE TABLE IF NOT EXISTS topics (
-                 topic_id        TEXT    PRIMARY KEY,
-                 label           TEXT,
-                 created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                 last_used_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-             );
-
-             -- FTS5 shadow table for full-text search (BM25 ranking)
-             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
-                 USING fts5(key UNINDEXED, content,
-                            content='memory', content_rowid='rowid',
-                            tokenize='unicode61');
-
-             -- Keep FTS in sync via triggers
-             CREATE TRIGGER IF NOT EXISTS memory_ai
-                 AFTER INSERT ON memory BEGIN
-                     INSERT INTO memory_fts(rowid, key, content)
-                     VALUES (new.rowid, new.key, new.content);
-                 END;
-
-             CREATE TRIGGER IF NOT EXISTS memory_au
-                 AFTER UPDATE ON memory BEGIN
-                     INSERT INTO memory_fts(memory_fts, rowid, key, content)
-                     VALUES ('delete', old.rowid, old.key, old.content);
-                     INSERT INTO memory_fts(rowid, key, content)
-                     VALUES (new.rowid, new.key, new.content);
-                 END;
-
-             CREATE TRIGGER IF NOT EXISTS memory_ad
-                 AFTER DELETE ON memory BEGIN
-                     INSERT INTO memory_fts(memory_fts, rowid, key, content)
-                     VALUES ('delete', old.rowid, old.key, old.content);
-                 END;
-            ",
-        )?;
-
-        // ── Schema migration: add topic column to existing DBs ────────────────
-        // Safe to run on new DBs (column already exists) and old DBs (adds it).
-        let _ = conn.execute_batch(
-            "ALTER TABLE memory ADD COLUMN topic TEXT;",
-        );
-        // (Ignore error — it just means the column already exists.)
-
-        // ── Create vector table dynamically based on embedding dimension ───
-        // We can only create it when we know the embedding dimension, and
-        // only when the sqlite-vec feature is compiled in.
-        #[cfg(feature = "sqlite-vec")]
-        if embed_dim > 0 {
-            conn.execute_batch(&format!(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vss
-                     USING vec0(key TEXT PRIMARY KEY, embedding float[{dim}]);",
-                dim = embed_dim
-            ))?;
+        let manager = if is_memory {
+            SqliteConnectionManager::memory()
+        } else {
+            SqliteConnectionManager::file(path)
         }
+        .with_init(move |conn| setup_schema(conn, embed_dim_for_init));
+
+        let pool = r2d2::Pool::builder()
+            .max_size(if is_memory { 1 } else { 4 })
+            .build(manager)
+            .map_err(|e| anyhow!("Failed to create SQLite connection pool: {}", e))?;
 
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            pool,
             embedder,
             embed_dim,
         })
@@ -186,8 +153,6 @@ impl SqliteMemory {
         k: usize,
         session: Option<&str>,
     ) -> Result<Vec<String>> {
-        // sqlite-vec KNN syntax:  WHERE embedding MATCH <blob> AND k = <n>
-        // We join back to the memory table to apply the optional session filter.
         let sql = if session.is_some() {
             "SELECT v.key FROM memory_vss v
              JOIN memory m ON v.key = m.key
@@ -258,7 +223,6 @@ impl SqliteMemory {
         if keys.is_empty() {
             return Ok(vec![]);
         }
-        // Build IN clause placeholders: (?1, ?2, ..., ?N)
         let placeholders: String = (1..=keys.len())
             .map(|i| format!("?{}", i))
             .collect::<Vec<_>>()
@@ -286,10 +250,97 @@ impl SqliteMemory {
                 .map(|e| (e.key.clone(), e))
                 .collect();
 
-        // Return in the order given by `keys`
         let ordered: Vec<MemoryEntry> = keys.iter().filter_map(|k| map.remove(k)).collect();
         Ok(ordered)
     }
+}
+
+impl Default for SqliteMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Schema setup helper ────────────────────────────────────────────────────────
+
+/// Initialise the database schema for a newly-created connection.
+///
+/// Called by the r2d2 pool's `with_init` callback for every new connection.
+/// All DDL uses `IF NOT EXISTS`, making this function fully idempotent.
+fn setup_schema(conn: &mut Connection, embed_dim: usize) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA foreign_keys=ON;
+
+         -- Main key-value memory table
+         CREATE TABLE IF NOT EXISTS memory (
+             key         TEXT    PRIMARY KEY,
+             content     TEXT    NOT NULL,
+             category    TEXT    NOT NULL DEFAULT 'Daily',
+             session     TEXT,
+             topic       TEXT,
+             created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+             updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+         );
+
+         -- Topic registry — one row per known topic.
+         CREATE TABLE IF NOT EXISTS topics (
+             topic_id        TEXT    PRIMARY KEY,
+             label           TEXT,
+             created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+             last_used_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+         );
+
+         -- FTS5 shadow table for full-text search (BM25 ranking)
+         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
+             USING fts5(key UNINDEXED, content,
+                        content='memory', content_rowid='rowid',
+                        tokenize='unicode61');
+
+         -- Keep FTS in sync via triggers
+         CREATE TRIGGER IF NOT EXISTS memory_ai
+             AFTER INSERT ON memory BEGIN
+                 INSERT INTO memory_fts(rowid, key, content)
+                 VALUES (new.rowid, new.key, new.content);
+             END;
+
+         CREATE TRIGGER IF NOT EXISTS memory_au
+             AFTER UPDATE ON memory BEGIN
+                 INSERT INTO memory_fts(memory_fts, rowid, key, content)
+                 VALUES ('delete', old.rowid, old.key, old.content);
+                 INSERT INTO memory_fts(rowid, key, content)
+                 VALUES (new.rowid, new.key, new.content);
+             END;
+
+         CREATE TRIGGER IF NOT EXISTS memory_ad
+             AFTER DELETE ON memory BEGIN
+                 INSERT INTO memory_fts(memory_fts, rowid, key, content)
+                 VALUES ('delete', old.rowid, old.key, old.content);
+             END;
+        ",
+    )?;
+
+    // Migration: add topic column to existing databases.
+    // Safe to run on new DBs (column already exists) and old DBs (adds it).
+    // Ignoring the error because it just means the column already exists.
+    let _ = conn.execute_batch("ALTER TABLE memory ADD COLUMN topic TEXT;");
+
+    // Create vector table dynamically based on embedding dimension.
+    // Only needed when sqlite-vec feature is active and embeddings are configured.
+    #[cfg(feature = "sqlite-vec")]
+    if embed_dim > 0 {
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vss
+                 USING vec0(key TEXT PRIMARY KEY, embedding float[{dim}]);",
+            dim = embed_dim
+        ))?;
+    }
+
+    // Suppress unused warning when sqlite-vec feature is not enabled
+    #[cfg(not(feature = "sqlite-vec"))]
+    let _ = embed_dim;
+
+    Ok(())
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -350,13 +401,12 @@ impl Memory for SqliteMemory {
     ) -> Result<()> {
         let cat_str = category_to_str(&category);
 
-        // Compute embedding BEFORE acquiring the mutex to reduce lock hold time.
+        // Compute embedding BEFORE acquiring a connection to minimise hold time.
         let embedding: Option<Vec<f32>> = if let Some(ref embedder) = self.embedder {
             if embedder.dim() > 0 {
                 match embedder.embed_one(content).await {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        // Non-fatal: log and continue without vector
                         tracing::warn!("Embedding failed for key '{}': {}; skipping vector index", key, e);
                         None
                     }
@@ -368,7 +418,7 @@ impl Memory for SqliteMemory {
             None
         };
 
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
 
         conn.execute(
             "INSERT INTO memory (key, content, category, session, topic)
@@ -382,7 +432,6 @@ impl Memory for SqliteMemory {
             params![key, content, cat_str, session, topic],
         )?;
 
-        // Persist vector index entry if we have an embedding
         if let Some(ref emb) = embedding {
             self.upsert_embedding(&conn, key, emb)?;
         }
@@ -399,12 +448,10 @@ impl Memory for SqliteMemory {
         session: Option<&str>,
         scope: RecallScope,
     ) -> Result<Vec<MemoryEntry>> {
-        // Clean scope: return nothing
         if scope == RecallScope::Clean {
             return Ok(vec![]);
         }
 
-        // Oversample for RRF quality: fetch 3× and re-rank
         let fetch_n = (limit * 3).max(20);
 
         // ── Path A: hybrid vector + FTS5 + RRF ───────────────────────────────
@@ -414,7 +461,7 @@ impl Memory for SqliteMemory {
                 match embedder.embed_one(query).await {
                     Ok(q_emb) => {
                         let q_bytes = vec_to_bytes(&q_emb);
-                        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+                        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
 
                         let vec_keys =
                             Self::vector_search(&conn, &q_bytes, fetch_n, session)
@@ -439,9 +486,9 @@ impl Memory for SqliteMemory {
             }
         }
 
-        // ── Path B: FTS5-only (no vector feature or dim==0) ──────────────────
+        // ── Path B: FTS5-only ─────────────────────────────────────────────────
         {
-            let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+            let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
             let fts_keys = Self::fts_search(&conn, query, fetch_n, session).unwrap_or_default();
 
             if !fts_keys.is_empty() {
@@ -450,7 +497,7 @@ impl Memory for SqliteMemory {
                 return Self::fetch_by_keys(&conn, &top_keys);
             }
 
-            // ── Path C: LIKE scan fallback (last resort) ──────────────────────
+            // ── Path C: LIKE scan fallback ────────────────────────────────────
             let like_pat = format!("%{}%", query);
             let sql = if session.is_some() {
                 "SELECT key, content, category, session, topic FROM memory
@@ -483,7 +530,6 @@ impl Memory for SqliteMemory {
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?
             };
-            // Apply scope filter and truncate
             let filtered: Vec<MemoryEntry> = entries
                 .into_iter()
                 .filter(|e| scope_matches_entry(e, &scope))
@@ -496,7 +542,7 @@ impl Memory for SqliteMemory {
     // ── get ──────────────────────────────────────────────────────────────────
 
     async fn get(&self, key: &str) -> Result<Option<MemoryEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT key, content, category, session, topic FROM memory WHERE key = ?1",
         )?;
@@ -521,7 +567,7 @@ impl Memory for SqliteMemory {
         category: Option<&Category>,
         session: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
 
         let (sql, cat_str) = match (category, session) {
             (Some(cat), Some(_)) => (
@@ -605,7 +651,7 @@ impl Memory for SqliteMemory {
     // ── forget ───────────────────────────────────────────────────────────────
 
     async fn forget(&self, key: &str) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
         self.delete_embedding(&conn, key)?;
         let affected = conn.execute("DELETE FROM memory WHERE key = ?1", params![key])?;
         Ok(affected > 0)
@@ -614,7 +660,7 @@ impl Memory for SqliteMemory {
     // ── count ────────────────────────────────────────────────────────────────
 
     async fn count(&self) -> Result<usize> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM memory", [], |row| row.get(0))?;
         Ok(count as usize)
@@ -623,7 +669,7 @@ impl Memory for SqliteMemory {
     // ── health_check ──────────────────────────────────────────────────────────
 
     async fn health_check(&self) -> bool {
-        let conn = match self.conn.lock() {
+        let conn = match self.pool.get() {
             Ok(c) => c,
             Err(_) => return false,
         };
@@ -634,7 +680,6 @@ impl Memory for SqliteMemory {
 
 // ── RecallScope helpers ───────────────────────────────────────────────────────
 
-/// Returns true if an entry should pass the given scope filter.
 fn scope_matches_entry(entry: &MemoryEntry, scope: &RecallScope) -> bool {
     match scope {
         RecallScope::Clean => false,
@@ -648,9 +693,6 @@ fn scope_matches_entry(entry: &MemoryEntry, scope: &RecallScope) -> bool {
 }
 
 impl SqliteMemory {
-    /// Filter a list of keys by loading their category/topic metadata and
-    /// applying the RecallScope rules.  Returns only keys that pass the filter,
-    /// preserving the original order.
     fn filter_keys_by_scope(
         &self,
         conn: &Connection,
@@ -660,7 +702,6 @@ impl SqliteMemory {
         if keys.is_empty() {
             return Ok(keys);
         }
-        // Fetch minimal metadata (category + topic) for each key
         let placeholders: String = (1..=keys.len())
             .map(|i| format!("?{}", i))
             .collect::<Vec<_>>()
@@ -704,19 +745,18 @@ impl SqliteMemory {
     /// Delete memory entries older than `ttl_days` for the given category.
     ///
     /// `ttl_days == 0` means "never expire" (skip deletion).
-    ///
     /// Returns the number of rows deleted.
+    ///
+    /// Phase 14-F1: Uses `SECONDS_PER_DAY` constant instead of magic literal.
     pub async fn hygiene(&self, category: &Category, ttl_days: u32) -> Result<usize> {
         if ttl_days == 0 {
             return Ok(0);
         }
         let cat_str = category_to_str(category);
-        let cutoff_secs = ttl_days as i64 * 86_400;
-        let conn = self.conn.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+        // Phase 14-P3-2: Named constant instead of magic number 86_400
+        let cutoff_secs = ttl_days as i64 * SECONDS_PER_DAY;
+        let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
 
-        // Collect keys first (to also remove vector index entries).
-        // Note: stmt must outlive the MappedRows iterator, so we explicitly
-        // name the collection result before stmt is dropped at end of block.
         let keys: Vec<String> = {
             let mut stmt = conn.prepare(
                 "SELECT key FROM memory
@@ -934,5 +974,11 @@ mod tests {
     async fn test_health_check() {
         let mem = make_mem();
         assert!(mem.health_check().await);
+    }
+
+    #[test]
+    fn test_seconds_per_day_constant() {
+        // Verify the constant matches the expected value (no magic numbers in code).
+        assert_eq!(SECONDS_PER_DAY, 86_400, "SECONDS_PER_DAY must equal 86400");
     }
 }

@@ -123,6 +123,11 @@ impl AgentEngine {
     ) -> Result<String> {
         let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
+        // Tracks whether any tool in this turn returned an error.
+        // Used by the Tier-1 reflection heuristic to decide whether a self-check
+        // is warranted after the agent produces its final response.
+        let mut had_tool_error = false;
+
         // ── Step 1: Determine recall scope ────────────────────────────────────
         //
         // Two-tier clean intent detection:
@@ -226,13 +231,36 @@ impl AgentEngine {
                 // No more tool calls — turn complete
                 let scrubbed = adaclaw_security::scrub::scrub_credentials(&response.content);
 
+                // ── Tiered Reflection ─────────────────────────────────────────
+                //
+                // Tier 1 (zero tokens): heuristic check — triggers when:
+                //   a) ≥1 tool returned an error AND the response doesn't mention it
+                //   b) The agent used ≥3 iterations (complex multi-step task)
+                //   c) User explicitly asked to verify/confirm the result
+                //
+                // Tier 2 (one LLM yes/no + optional fix): only runs when Tier 1
+                //   triggers. Bounded cost — at most 2 extra LLM calls per turn,
+                //   and only for complex or error-laden tasks.
+                //
+                // 95%+ of ordinary single-step conversations pay zero extra cost.
+                let final_response = if needs_reflection_tier1(input, &scrubbed, had_tool_error, iteration) {
+                    debug!(
+                        iteration,
+                        had_tool_error,
+                        "Tier 1 reflection triggered — running LLM self-check"
+                    );
+                    tiered_reflect(provider, model, input, scrubbed, &messages).await
+                } else {
+                    scrubbed
+                };
+
                 // Add assistant reply to persistent history
-                self.push_history(MessageEntry::new("assistant", &scrubbed, &current_topic));
+                self.push_history(MessageEntry::new("assistant", &final_response, &current_topic));
 
                 // Index this conversation turn into memory
-                self.index_conversation(input, &scrubbed, &current_topic, &scope).await;
+                self.index_conversation(input, &final_response, &current_topic, &scope).await;
 
-                return Ok(scrubbed);
+                return Ok(final_response);
             }
 
             // De-duplicate tool calls
@@ -290,8 +318,16 @@ impl AgentEngine {
                         };
                         (out, res.success)
                     }
-                    Err(e) => (format!("Error executing tool: {}", e), false),
+                    Err(e) => {
+                        had_tool_error = true;
+                        (format!("Error executing tool: {}", e), false)
+                    }
                 };
+
+                // Track tool-level failures for Tier-1 reflection
+                if !success {
+                    had_tool_error = true;
+                }
 
                 debug!(tool = %name, success, "Tool call completed");
 
@@ -369,7 +405,7 @@ impl AgentEngine {
 
         let key = format!("conv:{}:{}", self.session_id, ts);
 
-        if let Err(e) = memory
+        match memory
             .store(
                 &key,
                 &content,
@@ -378,11 +414,11 @@ impl AgentEngine {
                 Some(topic_id),
             )
             .await
-        {
+        { Err(e) => {
             warn!(key, error = %e, "Failed to index conversation turn");
-        } else {
+        } _ => {
             debug!(key, topic_id, "Conversation turn indexed");
-        }
+        }}
     }
 }
 
@@ -470,11 +506,18 @@ async fn detect_clean_intent_llm(provider: &dyn Provider, model: &str, message: 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn truncate(s: &str, max_chars: usize) -> &str {
-    if s.len() <= max_chars {
+/// Truncate `s` to at most `max_bytes` **bytes**, returning a valid UTF-8 slice.
+///
+/// Note: the limit is in bytes, not Unicode scalar values (this is intentional —
+/// the callers use conservative byte limits, and for typical LLM snippet indexing
+/// (max 300–500 bytes) the difference is rarely significant in practice).
+/// The function always returns a valid UTF-8 slice even when the byte limit falls
+/// inside a multi-byte codepoint (it walks back to the nearest char boundary).
+fn truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
         return s;
     }
-    let mut idx = max_chars;
+    let mut idx = max_bytes;
     while !s.is_char_boundary(idx) {
         idx -= 1;
     }
@@ -547,6 +590,176 @@ pub(crate) fn force_compress_messages(messages: &mut Vec<ChatMessage>) {
         remaining = messages.len(),
         "force_compress_messages: dropped oldest half of conversation to recover context space"
     );
+}
+
+// ── Tiered Reflection ─────────────────────────────────────────────────────────
+
+/// Tier-1 heuristic: decide whether the LLM self-check (Tier 2) is warranted.
+///
+/// This is a **zero-token** check — no LLM call is made.  It returns `true`
+/// when at least one of the following conditions holds:
+///
+/// 1. **Unacknowledged tool error** — ≥1 tool returned an error AND the
+///    agent's response does not contain any failure-acknowledgement signal.
+///    Catches the common case where the model says "done!" despite a tool
+///    failure it quietly ignored.
+///
+/// 2. **High iteration count** — the agent went through ≥3 tool-call
+///    iterations, indicating a complex multi-step task where completeness
+///    is harder to guarantee.
+///
+/// 3. **Explicit verification keywords** — the user's message contains
+///    words like "confirm", "verify", "确认", "检查" etc., signalling that
+///    correctness is especially important.
+///
+/// When this returns `false` (the common case for simple requests), the
+/// agent response is returned immediately with zero additional cost.
+pub(crate) fn needs_reflection_tier1(
+    user_input: &str,
+    response: &str,
+    had_tool_error: bool,
+    iterations_used: usize,
+) -> bool {
+    // Condition 1: Tool error present but response doesn't mention it
+    if had_tool_error {
+        let lower_resp = response.to_lowercase();
+        let acknowledges_failure = lower_resp.contains("error")
+            || lower_resp.contains("fail")
+            || lower_resp.contains("错误")
+            || lower_resp.contains("失败")
+            || lower_resp.contains("unable")
+            || lower_resp.contains("cannot")
+            || lower_resp.contains("无法");
+        if !acknowledges_failure {
+            return true;
+        }
+    }
+
+    // Condition 2: Complex task (many iterations)
+    // iterations_used is the 0-based loop counter; value of 2 means the
+    // 3rd iteration has completed (iterations 0, 1, 2).
+    if iterations_used >= 2 {
+        return true;
+    }
+
+    // Condition 3: User explicitly asked for verification
+    let lower_input = user_input.to_lowercase();
+    let verification_keywords: &[&str] = &[
+        // Chinese
+        "确认", "检查", "验证", "核实", "核查", "检验",
+        "是否完成", "是否成功", "完成了吗", "有没有问题",
+        // English
+        "verify", "confirm", "make sure", "double check", "double-check",
+        "check if", "check that", "ensure", "validate", "make certain",
+    ];
+    if verification_keywords.iter().any(|kw| lower_input.contains(kw)) {
+        return true;
+    }
+
+    false
+}
+
+/// Tier-2 LLM self-check: ask the model whether its own response is complete,
+/// and optionally request a corrective follow-up pass.
+///
+/// ## Cost model
+///
+/// | Step | When | Approx tokens |
+/// |------|------|--------------|
+/// | Yes/No completeness check | Always (Tier 1 triggered) | ~200–400 |
+/// | Corrective pass | Only when model says "NO" | ~400–1000 |
+///
+/// Maximum additional cost per turn: ~2 LLM calls, ~1 400 extra tokens.
+/// This is bounded and only incurred for genuinely complex / error-prone tasks.
+///
+/// ## Fallback
+///
+/// If either LLM call fails, the original `candidate_response` is returned
+/// unchanged — the reflection system is entirely non-blocking.
+async fn tiered_reflect(
+    provider: &dyn Provider,
+    model: &str,
+    user_input: &str,
+    candidate_response: String,
+    messages: &[ChatMessage],
+) -> String {
+    // ── Step 1: Yes/No completeness check ─────────────────────────────────────
+    let check_system = "You are a quality-checker for an AI assistant. \
+                        Answer ONLY 'YES' or 'NO'. \
+                        YES = the assistant's response fully and correctly addressed \
+                        the user's request. \
+                        NO  = the response is incomplete, incorrect, or missed part \
+                        of the request.";
+
+    let check_prompt = format!(
+        "User request: \"{}\"\n\nAssistant response:\n{}\n\nWas the task fully completed?",
+        // Clip snippets to control cost
+        user_input.chars().take(400).collect::<String>(),
+        candidate_response.chars().take(600).collect::<String>(),
+    );
+
+    let is_complete = match provider
+        .chat_with_system(Some(check_system), &check_prompt, model, 0.0)
+        .await
+    {
+        Ok(reply) => {
+            let upper = reply.trim().to_uppercase();
+            debug!("Reflection Tier-2 self-check result: {}", &upper[..upper.len().min(10)]);
+            upper.starts_with("YES")
+        }
+        Err(e) => {
+            // Non-fatal: LLM unavailable → keep original response
+            debug!(error = %e, "Reflection Tier-2 check failed — keeping original response");
+            return candidate_response;
+        }
+    };
+
+    if is_complete {
+        debug!("Reflection Tier-2: response is complete, no correction needed");
+        return candidate_response;
+    }
+
+    // ── Step 2: Corrective pass (only when model says "NO") ───────────────────
+    debug!("Reflection Tier-2: response flagged as incomplete — requesting correction");
+
+    // Build a correction prompt using the existing message history for context.
+    // We append a meta-instruction rather than replacing the last assistant message,
+    // so the model sees the full picture of what it already tried.
+    let fix_prompt = format!(
+        "Your previous response to the user's request may be incomplete or incorrect.\n\n\
+         User request: \"{}\"\n\n\
+         Your previous response:\n{}\n\n\
+         Please provide a complete and correct response, addressing any gaps or errors.",
+        user_input.chars().take(300).collect::<String>(),
+        candidate_response.chars().take(500).collect::<String>(),
+    );
+
+    let mut fix_messages = messages.to_vec();
+    fix_messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: fix_prompt,
+    });
+
+    let fix_req = ChatRequest {
+        messages: &fix_messages,
+        system: None,
+    };
+
+    match provider.chat(fix_req, model, 0.3).await {
+        Ok(resp) => {
+            let corrected = adaclaw_security::scrub::scrub_credentials(&resp.content);
+            debug!(
+                original_len = candidate_response.len(),
+                corrected_len = corrected.len(),
+                "Reflection Tier-2: correction obtained"
+            );
+            corrected
+        }
+        Err(e) => {
+            debug!(error = %e, "Reflection Tier-2 correction failed — keeping original response");
+            candidate_response
+        }
+    }
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────

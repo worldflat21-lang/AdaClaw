@@ -16,6 +16,8 @@
 //! | Email        | `email`       | IMAP + SMTP         |
 //! | Matrix       | `matrix`      | Client-Server API（`feature = "matrix"`） |
 
+/// Phase 14-P0-2: structured error types for library crate consumers.
+pub mod error;
 pub mod base;
 pub mod cli;
 pub mod dingtalk;

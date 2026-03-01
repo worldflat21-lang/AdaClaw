@@ -420,7 +420,7 @@ fn default_per_channel() -> u32 {
     200
 }
 fn default_max_actions() -> u32 {
-    200
+    100 // P2-2 Fix: 统一为 100，与 config.example.toml 保持一致（更保守）
 }
 
 impl Default for RateLimitConfig {

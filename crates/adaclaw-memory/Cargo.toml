@@ -1,7 +1,14 @@
 [package]
 name = "adaclaw-memory"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 default = []
@@ -13,7 +20,7 @@ openai-embed = ["dep:reqwest"]
 sqlite-vec = ["dep:sqlite-vec"]
 
 [dependencies]
-adaclaw-core  = { path = "../adaclaw-core" }
+adaclaw-core  = { path = "../adaclaw-core", version = "0.1.0" }
 anyhow        = "1.0"
 async-trait   = "0.1"
 serde         = { version = "1.0", features = ["derive"] }
@@ -22,6 +29,11 @@ rusqlite      = { version = "0.31", features = ["bundled"] }
 tracing       = "0.1"
 futures-util  = "0.3"
 uuid          = { version = "1", features = ["v4"] }
+# Phase 14-P0-2: structured error types for library crate
+thiserror     = "1.0"
+# Phase 14-P2-1: SQLite connection pool (multiple readers, WAL-safe writers)
+r2d2          = "0.8"
+r2d2_sqlite   = "0.24"
 
 # Optional: vector extension for sqlite
 sqlite-vec   = { version = "0.1", optional = true }

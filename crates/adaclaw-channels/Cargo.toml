@@ -1,7 +1,14 @@
 [package]
 name = "adaclaw-channels"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 default = []
@@ -9,7 +16,7 @@ default = []
 matrix = []
 
 [dependencies]
-adaclaw-core = { path = "../adaclaw-core" }
+adaclaw-core = { path = "../adaclaw-core", version = "0.1.0" }
 anyhow = "1.0"
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -19,6 +26,8 @@ futures-util = "0.3"
 reqwest = { version = "0.11", features = ["json", "stream"] }
 uuid = { version = "1.7", features = ["v4"] }
 tracing = "0.1"
+# Phase 14-P0-2: structured error types for library crate
+thiserror = "1.0"
 
 # ── Telegram signature verification ──────────────────────────────────────────
 hmac = "0.12.1"

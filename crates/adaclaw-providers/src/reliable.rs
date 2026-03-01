@@ -599,7 +599,7 @@ mod tests {
             ProviderCapabilities { native_tool_calling: false, vision: false, streaming: false }
         }
         async fn chat(&self, _req: ChatRequest<'_>, _model: &str, _temp: f64) -> Result<ChatResponse> {
-            Ok(ChatResponse { content: "ok".to_string() })
+            Ok(ChatResponse { content: "ok".to_string(), reasoning_content: None })
         }
         async fn chat_with_system(&self, _s: Option<&str>, _m: &str, _mo: &str, _t: f64) -> Result<String> {
             Ok("ok".to_string())

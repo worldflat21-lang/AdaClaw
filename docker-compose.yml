@@ -1,21 +1,31 @@
 version: "3.9"
 services:
   adaclaw:
-    image: ghcr.io/your-org/adaclaw:latest
+    # P2-3 Fix: 替换 your-org 占位符为正式仓库地址
+    image: ghcr.io/worldflat21-lang/adaclaw:latest
+    # 或从本地源码构建（去掉下面注释并注释掉 image: 行）：
     # build: .
     restart: unless-stopped
     environment:
       - ADACLAW_AUTONOMY_LEVEL=full
-      - ADACLAW_API_KEY=${ADACLAW_API_KEY}
+      # 通过 .env 文件或 shell 导出变量后传入：
+      # ADACLAW_BEARER_TOKEN=your-secret-token
+      - ADACLAW_BEARER_TOKEN=${ADACLAW_BEARER_TOKEN:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     volumes:
+      # 仅挂载 AdaClaw 的工作目录，宿主机其他目录完全隔离
       - ./workspace:/app/workspace
       - ./config.toml:/app/config.toml:ro
     ports:
+      # Gateway 只绑定本地，通过 Cloudflare/Tailscale 隧道对外暴露
       - "127.0.0.1:8080:8080"
-    read_only: true
+    # ── 安全加固 ──────────────────────────────────────────────────────────────
+    read_only: true          # 容器根文件系统只读
     tmpfs:
-      - /tmp
+      - /tmp                 # 临时目录可写（进程需要）
     cap_drop:
-      - ALL
+      - ALL                  # 删除所有 Linux capabilities
     security_opt:
       - no-new-privileges:true

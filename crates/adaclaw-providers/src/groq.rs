@@ -17,6 +17,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use crate::registry::ProviderSpec;
 use reqwest::Client;
+use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
 use tracing::debug;
 
@@ -26,7 +27,8 @@ const WHISPER_MODEL: &str = "whisper-large-v3";
 // ── GroqProvider ──────────────────────────────────────────────────────────────
 
 pub struct GroqProvider {
-    key: Option<String>,
+    /// Phase 14-P1-2: API key wrapped in `Secret<String>`.
+    key: Option<Secret<String>>,
     base_url: String,
     client: Client,
 }
@@ -34,7 +36,7 @@ pub struct GroqProvider {
 impl GroqProvider {
     pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
         Self {
-            key: key.map(|s| s.to_string()),
+            key: key.map(|s| Secret::new(s.to_string())),
             base_url: url.unwrap_or(BASE_URL).trim_end_matches('/').to_string(),
             client: Client::new(),
         }
@@ -52,7 +54,7 @@ impl GroqProvider {
     }
 
     fn auth_header(&self) -> Option<String> {
-        self.key.as_ref().map(|k| format!("Bearer {}", k))
+        self.key.as_ref().map(|k| format!("Bearer {}", k.expose_secret()))
     }
 }
 
@@ -102,7 +104,7 @@ impl Provider for GroqProvider {
             .to_string();
 
         debug!(model = %model, chars = content.len(), "Groq response");
-        Ok(ChatResponse { content })
+        Ok(ChatResponse { content, reasoning_content: None })
     }
 
     async fn chat_with_system(
@@ -131,7 +133,8 @@ impl Provider for GroqProvider {
 /// 将音频字节转录为文本。
 /// 用于 Telegram voice/audio 消息的自动转录。
 pub struct GroqWhisper {
-    key: String,
+    /// Phase 14-P1-2: Whisper API key wrapped in `Secret<String>`.
+    key: Secret<String>,
     base_url: String,
     client: Client,
 }
@@ -139,7 +142,7 @@ pub struct GroqWhisper {
 impl GroqWhisper {
     pub fn new(key: impl Into<String>, base_url: Option<&str>) -> Self {
         Self {
-            key: key.into(),
+            key: Secret::new(key.into()),
             base_url: base_url.unwrap_or(BASE_URL).trim_end_matches('/').to_string(),
             client: Client::new(),
         }
@@ -171,7 +174,7 @@ impl GroqWhisper {
         let resp = self
             .client
             .post(format!("{}/audio/transcriptions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.key))
+            .header("Authorization", format!("Bearer {}", self.key.expose_secret()))
             .multipart(form)
             .send()
             .await?;
@@ -196,14 +199,17 @@ impl GroqWhisper {
 
 // ── ProviderSpec ──────────────────────────────────────────────────────────────
 
-pub const SPEC: ProviderSpec = ProviderSpec {
-    name: "groq",
-    aliases: &["groq-llama", "llama-3"],
-    local: false,
-    capabilities: ProviderCapabilities {
-        native_tool_calling: true,
-        vision: false,
-        streaming: true,
-    },
-    factory: |key, url| Box::new(GroqProvider::new(key, url)),
-};
+#[allow(deprecated)]
+pub fn spec() -> ProviderSpec {
+    ProviderSpec {
+        name: "groq",
+        aliases: &["groq-llama", "llama-3"],
+        local: false,
+        capabilities: ProviderCapabilities {
+            native_tool_calling: true,
+            vision: false,
+            streaming: true,
+        },
+        factory: Box::new(|key, url| Box::new(GroqProvider::new(key, url))),
+    }
+}

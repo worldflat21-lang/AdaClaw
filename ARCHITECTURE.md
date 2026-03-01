@@ -87,8 +87,9 @@ adaclaw/
 ├── ARCHITECTURE.md              # 本文件
 ├── TASKS.md                     # 分阶段实施计划
 ├── README.md
-├── LICENSE-MIT
-├── LICENSE-APACHE
+├── LICENSE                      # Apache-2.0（单一许可证文件）
+├── Dockerfile                   # 多阶段构建（builder + debian:bookworm-slim runtime）
+├── docker-compose.yml
 │
 ├── crates/                      # 可复用 library crates
 │   ├── adaclaw-core/                # 核心 trait 定义（零实现，最小依赖）

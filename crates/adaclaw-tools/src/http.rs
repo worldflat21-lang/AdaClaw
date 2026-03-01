@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::str::FromStr;
 use std::time::Duration;
 
+// Phase 14-P1-1: import SSRF protection from adaclaw-security
+use adaclaw_security::ssrf::check_ssrf_url;
+
 pub struct HttpRequestTool {
     client: Client,
 }
@@ -93,6 +96,18 @@ impl Tool for HttpRequestTool {
                 success: false,
                 output: String::new(),
                 error: Some(format!("Only http:// and https:// URLs are allowed, got: {}", url)),
+            });
+        }
+
+        // Phase 14-P1-1: SSRF protection — block private/internal IP targets.
+        // DNS resolution is performed before the actual HTTP request so that
+        // hostname aliases that resolve to loopback/private IPs are also caught.
+        if let Err(ssrf_err) = check_ssrf_url(url).await {
+            tracing::warn!(url = %url, error = %ssrf_err, "http_request blocked by SSRF filter");
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(ssrf_err.to_string()),
             });
         }
 

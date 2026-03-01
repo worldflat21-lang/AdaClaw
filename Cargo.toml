@@ -10,22 +10,42 @@ members = [
 ]
 resolver = "2"
 
-[package]
-name = "adaclaw"
+# ── Workspace-level lint configuration (Phase 14-P1-3) ────────────────────────
+# All library crates opt-in via `[lints] workspace = true` in their Cargo.toml.
+# - unsafe_code: deny  → prevents raw pointer / unsafe blocks
+# - unwrap_used / expect_used: warn first; upgrade to deny once stock is cleared
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["AdaClaw Contributors"]
 description = "Lightweight, secure, multi-channel Rust AI Agent Runtime"
 license = "Apache-2.0"
+repository = "https://github.com/worldflat21-lang/AdaClaw"
+
+[package]
+name = "adaclaw"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-adaclaw-core = { path = "crates/adaclaw-core" }
-adaclaw-providers = { path = "crates/adaclaw-providers" }
-adaclaw-memory = { path = "crates/adaclaw-memory" }
-adaclaw-tools = { path = "crates/adaclaw-tools" }
-adaclaw-channels = { path = "crates/adaclaw-channels" }
-adaclaw-security = { path = "crates/adaclaw-security" }
-adaclaw-server = { path = "crates/adaclaw-server" }
+adaclaw-core = { path = "crates/adaclaw-core", version = "0.1.0" }
+adaclaw-providers = { path = "crates/adaclaw-providers", version = "0.1.0" }
+adaclaw-memory = { path = "crates/adaclaw-memory", version = "0.1.0" }
+adaclaw-tools = { path = "crates/adaclaw-tools", version = "0.1.0" }
+adaclaw-channels = { path = "crates/adaclaw-channels", version = "0.1.0" }
+adaclaw-security = { path = "crates/adaclaw-security", version = "0.1.0" }
+adaclaw-server = { path = "crates/adaclaw-server", version = "0.1.0" }
 reqwest = { version = "0.11", features = ["json"] }
 tokio = { version = "1.36", features = ["full"] }
 clap = { version = "4.5", features = ["derive"] }
@@ -37,10 +57,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 regex = "1.10"
-lazy_static = "1.4"
 tokio-util = "0.7.18"
 async-trait = "0.1.89"
 uuid = { version = "1.8", features = ["v4"] }
+
+# ── Optional performance allocator (Phase 14-P2-3) ────────────────────────────
+# Enable with `--features jemalloc` on release builds for lower fragmentation.
+# Not in `default` features to keep binary size target < 10 MB for dev builds.
+[features]
+jemalloc = ["dep:tikv-jemallocator"]
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"

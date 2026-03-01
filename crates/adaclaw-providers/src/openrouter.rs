@@ -14,12 +14,14 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use crate::registry::ProviderSpec;
 use reqwest::Client;
+use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
 
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub struct OpenRouterProvider {
-    key: Option<String>,
+    /// Phase 14-P1-2: API key wrapped in `Secret<String>`.
+    key: Option<Secret<String>>,
     base_url: String,
     /// Optional site URL sent in `HTTP-Referer` header (for OpenRouter dashboard stats)
     site_url: Option<String>,
@@ -31,7 +33,7 @@ pub struct OpenRouterProvider {
 impl OpenRouterProvider {
     pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
         Self {
-            key: key.map(|s| s.to_string()),
+            key: key.map(|s| Secret::new(s.to_string())),
             base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
             site_url: None,
             app_name: Some("AdaClaw".to_string()),
@@ -87,7 +89,7 @@ impl Provider for OpenRouterProvider {
             .json(&body);
 
         if let Some(key) = &self.key {
-            builder = builder.header("Authorization", format!("Bearer {}", key));
+            builder = builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
         }
 
         // OpenRouter ranking / attribution headers (optional but recommended)
@@ -112,7 +114,7 @@ impl Provider for OpenRouterProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content })
+        Ok(ChatResponse { content, reasoning_content: None })
     }
 
     async fn chat_with_system(
@@ -134,18 +136,17 @@ impl Provider for OpenRouterProvider {
     }
 }
 
-pub const SPEC: ProviderSpec = ProviderSpec {
-    name: "openrouter",
-    aliases: &[
-        "openrouter/auto",
-        "or/auto",
-        "or",
-    ],
-    local: false,
-    capabilities: ProviderCapabilities {
-        native_tool_calling: true,
-        vision: true,
-        streaming: true,
-    },
-    factory: |key, url| Box::new(OpenRouterProvider::new(key, url)),
-};
+#[allow(deprecated)]
+pub fn spec() -> ProviderSpec {
+    ProviderSpec {
+        name: "openrouter",
+        aliases: &["openrouter/auto", "or/auto", "or"],
+        local: false,
+        capabilities: ProviderCapabilities {
+            native_tool_calling: true,
+            vision: true,
+            streaming: true,
+        },
+        factory: Box::new(|key, url| Box::new(OpenRouterProvider::new(key, url))),
+    }
+}

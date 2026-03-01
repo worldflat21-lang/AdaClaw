@@ -26,6 +26,66 @@ target_channel   = "telegram" # 结果发送到哪个渠道（可选）
 在工作区根目录（`workspace/`）创建 `HEARTBEAT.md`：
 
 ```markdown
+# Heartbeat System
+
+The heartbeat scheduler periodically reads `HEARTBEAT.md` in your workspace and dispatches pending tasks to the agent. Tasks are classified into two execution tiers based on `##` section headers:
+
+| Section header | Execution mode |
+|---------------|---------------|
+| `## Quick Tasks` (or no header) | **Quick** — injected into the normal MessageBus pipeline; fast, lightweight |
+| `## Long Tasks` | **Spawn** — a dedicated sub-agent is spawned with a `message` tool; has a 5-minute timeout; suitable for web search, email scanning, etc. |
+
+## Example HEARTBEAT.md
+
+```markdown
+# Heartbeat Tasks
+
+## Quick Tasks
+- [ ] Report current time and uptime
+- [ ] Send daily greeting to the team
+
+## Long Tasks
+- [ ] Search the web for today's AI news and write a 3-point summary
+- [ ] Scan unread emails and flag any urgent ones
+
+## Completed
+- [x] Initial setup verified
+```
+
+- Tasks marked `- [x]` are **skipped** (already done)
+- Pending tasks use `- [ ]` (standard GitHub Flavored Markdown checkbox syntax)
+- Both `- [ ]` and `* [ ]` prefixes are supported
+- Section headers are matched case-insensitively; `## Long 任务` also triggers Spawn mode
+
+## Configuration
+
+```toml
+[heartbeat]
+enabled = true
+interval_minutes = 30          # minimum: 5
+
+# Optional: send heartbeat results to a fixed channel/user
+# When omitted, results go to whoever most recently interacted with the agent
+# target_channel = "telegram:123456789"
+
+# Optional: custom path for the heartbeat file
+# heartbeat_file = "/path/to/HEARTBEAT.md"
+```
+
+## How Long Tasks work
+
+1. The scheduler looks up the default agent from the registry
+2. A `MessageTool` is injected as the first tool in the agent's tool list — the agent calls `message(text)` to push results to the user in real-time
+3. The sub-agent runs with a **5-minute timeout** in a dedicated Tokio task
+4. If the agent's final response is substantive (> 20 characters), it is also sent to the user as a completion notice
+5. On timeout, the user receives: `⏰ Background task timed out after 5 minutes.`
+
+## Dynamic channel tracking
+
+When `target_channel` is not configured, the scheduler resolves the most recent active channel from `StateManager` — whichever user/channel last interacted with the agent receives the heartbeat result. Internal channels (`cli`, `system`, `heartbeat`) are excluded to prevent self-loops.
+
+---
+
 # Heartbeat Tasks
 
 - [ ] 检查今日天气并总结给我

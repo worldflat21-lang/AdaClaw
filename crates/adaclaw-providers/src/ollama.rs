@@ -1,6 +1,7 @@
 use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
+use crate::error::ProviderError;
 use crate::registry::ProviderSpec;
 use reqwest::Client;
 use serde_json::Value;
@@ -66,9 +67,9 @@ impl Provider for OllamaProvider {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("Ollama API error {}: {}", status, text));
+            return Err(anyhow::Error::new(ProviderError::from_status(status, &text, None)));
         }
 
         let data: Value = resp.json().await?;
@@ -78,7 +79,7 @@ impl Provider for OllamaProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content })
+        Ok(ChatResponse { content, reasoning_content: None })
     }
 
     async fn chat_with_system(
@@ -104,20 +105,62 @@ impl Provider for OllamaProvider {
         let resp = self.client.get(format!("{}/api/tags", self.base_url)).send().await;
         match resp {
             Ok(r) if r.status().is_success() => Ok(()),
-            Ok(r) => Err(anyhow!("Ollama warmup failed: HTTP {}", r.status())),
-            Err(e) => Err(anyhow!("Ollama not reachable at {}: {}", self.base_url, e)),
+            Ok(r) => Err(anyhow::anyhow!("Ollama warmup failed: HTTP {}", r.status())),
+            Err(e) => Err(anyhow::anyhow!("Ollama not reachable at {}: {}", self.base_url, e)),
+        }
+    }
+
+    /// Discover locally installed Ollama models via `GET /api/tags`.
+    ///
+    /// Returns model names in the format `name:tag` (e.g. `"llama3:latest"`),
+    /// which is exactly what Ollama expects as the `model` field.
+    async fn list_models(&self) -> Result<Option<Vec<String>>> {
+        let resp = match self
+            .client
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Ok(None), // Ollama not running — not an error
+        };
+
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        let data: Value = resp.json().await?;
+        // Ollama /api/tags: { "models": [{ "name": "llama3:latest", ... }] }
+        let models: Vec<String> = data["models"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if models.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(models))
         }
     }
 }
 
-pub const SPEC: ProviderSpec = ProviderSpec {
-    name: "ollama",
-    aliases: &["llama3", "mistral", "qwen", "deepseek-r1"],
-    local: true,
-    capabilities: ProviderCapabilities {
-        native_tool_calling: false,
-        vision: false,
-        streaming: true,
-    },
-    factory: |key, url| Box::new(OllamaProvider::new(key, url)),
-};
+pub fn spec() -> ProviderSpec {
+    ProviderSpec {
+        name: "ollama",
+        // Note: "mistral" and "qwen" aliases removed — those names now route
+        // to dedicated cloud providers.  Use `base_url = "http://localhost:11434"`
+        // in the config to run any model locally through Ollama instead.
+        aliases: &["ollama", "llama3", "llama3.2", "deepseek-r1"],
+        local: true,
+        capabilities: ProviderCapabilities {
+            native_tool_calling: false,
+            vision: false,
+            streaming: true,
+        },
+        factory: Box::new(|key, url| Box::new(OllamaProvider::new(key, url))),
+    }
+}

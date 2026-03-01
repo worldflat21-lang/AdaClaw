@@ -7,12 +7,14 @@
 //! - 专属的工作区目录（默认 `~/.adaclaw/workspace-{agent_id}`）
 //! - Sub-agent 委托允许名单（`allow_delegate`，空列表 = 禁止委托，防递归）
 
+use adaclaw_core::memory::Memory;
 use adaclaw_core::provider::Provider;
 use adaclaw_core::tool::Tool;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agents::engine::AgentEngine;
 use crate::config::schema::AgentConfig;
@@ -58,9 +60,12 @@ impl ToolRegistry {
 
 /// 单个 Agent 的会话管理器（按 `session_id` 隔离对话历史）。
 ///
-/// 当前版本保留为扩展点，待后续实现会话持久化时使用。
+/// 每个 session 拥有一个持久的 `AgentEngine`，对话历史在多轮消息间保留。
+/// 使用 `Arc<AsyncMutex<AgentEngine>>` 保证跨 `tokio::spawn` 共享的同时，
+/// 同一 session 的消息被串行化处理（第二条消息等待第一条处理完成再执行）。
 pub struct SessionManager {
-    sessions: Mutex<HashMap<String, AgentEngine>>,
+    /// session_id → 持久 engine（含对话历史）
+    sessions: Mutex<HashMap<String, Arc<AsyncMutex<AgentEngine>>>>,
 }
 
 impl SessionManager {
@@ -71,7 +76,34 @@ impl SessionManager {
         }
     }
 
-    /// 会话数量。
+    /// 获取或创建指定 `session_id` 的 `AgentEngine`。
+    ///
+    /// - 首次调用（新 session）：创建新 engine，若提供 `memory` 则调用 `.with_memory()` 附加记忆后端。
+    /// - 后续调用（已有 session）：返回同一 engine 的 `Arc` 引用，历史记录完整保留。
+    ///
+    /// 返回 `Arc<AsyncMutex<AgentEngine>>`：
+    /// - `Arc` 允许在 `tokio::spawn` 闭包中跨线程持有
+    /// - `AsyncMutex` 保证同一 session 的多条消息串行执行（`.lock().await` 在 LLM 调用期间持有锁）
+    pub fn get_or_create(
+        &self,
+        session_id: &str,
+        memory: Option<Arc<dyn Memory>>,
+    ) -> Arc<AsyncMutex<AgentEngine>> {
+        let mut sessions = self.sessions.lock().unwrap();
+        sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| {
+                let engine = if let Some(mem) = memory {
+                    AgentEngine::new().with_memory(mem, session_id.to_string())
+                } else {
+                    AgentEngine::new()
+                };
+                Arc::new(AsyncMutex::new(engine))
+            })
+            .clone()
+    }
+
+    /// 当前活跃 session 数量。
     pub fn session_count(&self) -> usize {
         self.sessions.lock().unwrap().len()
     }
@@ -99,6 +131,9 @@ pub struct AgentInstance {
     /// 工具注册表（预过滤，用于列举/检查）。
     /// 执行时请调用 `build_tools()` 获取新鲜实例。
     pub tool_registry: ToolRegistry,
+
+    /// 注入的记忆后端（用于 memory_store / memory_recall / memory_forget 工具）。
+    pub memory: Option<Arc<dyn Memory>>,
 
     /// 该 Agent 允许使用的工具名称白名单（空 = 允许所有）。
     pub allowed_tools: Vec<String>,
@@ -145,7 +180,8 @@ impl AgentInstance {
         provider: Arc<dyn Provider>,
     ) -> Result<Self> {
         // ── 1. 构建预过滤工具注册表（仅用于检查，执行时重建） ────────────────
-        let all = adaclaw_tools::registry::all_tools();
+        // memory 此时尚未创建，用 None 构建检查用注册表（不涉及实际执行）
+        let all = adaclaw_tools::registry::all_tools(None);
         let filtered: Vec<Box<dyn Tool>> = if config.tools.is_empty() {
             all
         } else {
@@ -175,6 +211,7 @@ impl AgentInstance {
             agent_id: agent_id.to_string(),
             provider,
             tool_registry,
+            memory: None, // 由调用方通过 with_memory() 或 daemon 注入
             allowed_tools: config.tools.clone(),
             allow_delegate: config.subagents.allow.clone(),
             workspace,
@@ -191,7 +228,7 @@ impl AgentInstance {
     /// 每次消息处理时调用，规避 `Box<dyn Tool>` 无法 Clone 的限制。
     /// 调用方（daemon dispatch loop）在返回的列表末尾注入 `DelegateTool`（如果允许委托）。
     pub fn build_tools(&self) -> Vec<Box<dyn Tool>> {
-        let all = adaclaw_tools::registry::all_tools();
+        let all = adaclaw_tools::registry::all_tools(self.memory.clone());
         if self.allowed_tools.is_empty() {
             return all;
         }
@@ -199,9 +236,31 @@ impl AgentInstance {
         all.into_iter().filter(|t| allowed.contains(t.name())).collect()
     }
 
+    /// 附加记忆后端（builder 风格，供 daemon 在构建后注入）。
+    pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
     /// 返回此 Agent 是否允许委托任务给其他 Agent。
     pub fn can_delegate(&self) -> bool {
         !self.allow_delegate.is_empty()
+    }
+
+    /// 获取或创建指定 `session_id` 的持久 `AgentEngine`。
+    ///
+    /// 这是 P0-1 + P0-2 修复的核心入口：
+    /// - 首次调用会创建新 engine 并附加 `memory`（若提供）
+    /// - 后续调用返回同一 engine，保留全部对话历史
+    ///
+    /// 返回的 `Arc<AsyncMutex<AgentEngine>>` 可安全传入 `tokio::spawn`；
+    /// 持有锁时进行 LLM 调用，天然实现同一 session 内消息的串行化。
+    pub fn get_or_create_engine(
+        &self,
+        session_id: &str,
+        memory: Option<Arc<dyn Memory>>,
+    ) -> Arc<AsyncMutex<AgentEngine>> {
+        self.session_manager.get_or_create(session_id, memory)
     }
 }
 

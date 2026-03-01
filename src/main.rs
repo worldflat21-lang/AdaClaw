@@ -1,5 +1,12 @@
+// Phase 14-P2-3: Optional jemalloc global allocator.
+// Enable with `cargo build --features jemalloc` for lower fragmentation on
+// long-running daemon processes.  Not included in `default` features so that
+// the binary size stays < 10 MB for development builds.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use clap::{Parser, Subcommand};
-use tracing::info;
 
 pub mod agents;
 pub mod bus;
@@ -10,6 +17,7 @@ pub mod daemon;
 pub mod identity;
 pub mod observability;
 pub mod skills;
+pub mod state;
 pub mod tunnel;
 
 #[derive(Parser)]
@@ -124,11 +132,11 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Stop => {
-            info!("Sending stop signal... (not yet implemented)");
+            cmd_stop().await;
         }
 
         Commands::Status => {
-            info!("AdaClaw status: (not yet implemented)");
+            cmd_status().await;
         }
 
         Commands::Doctor => {
@@ -204,7 +212,7 @@ async fn run_chat(
         })
         .unwrap_or_else(|| "gpt-4o".to_string());
 
-    let tools = adaclaw_tools::registry::all_tools();
+    let tools = adaclaw_tools::registry::all_tools(None);
     let engine = agents::engine::AgentEngine::new();
 
     println!("AdaClaw Chat — provider: {}, model: {}", pname, model);
@@ -245,6 +253,85 @@ async fn run_chat(
 
     println!("Goodbye.");
     Ok(())
+}
+
+/// `adaclaw stop` — Send stop signal to the running daemon via gateway API.
+///
+/// Reads `gateway.bind` and `gateway.bearer_token` from config.toml and sends
+/// `POST /v1/stop`.  If the daemon is not reachable, prints a clear message.
+async fn cmd_stop() {
+    let cfg = config::Config::load();
+    let addr = &cfg.gateway.bind;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("http://{}/v1/stop", addr);
+    let mut req = client.post(&url).json(&serde_json::json!({}));
+
+    if let Some(token) = &cfg.gateway.bearer_token {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                println!("✅ Stop signal sent. Daemon is shutting down.");
+            } else {
+                eprintln!(
+                    "⚠️  Gateway responded with HTTP {}: {}",
+                    resp.status(),
+                    resp.text().await.unwrap_or_default()
+                );
+            }
+        }
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            println!("ℹ️  Daemon not running (could not connect to http://{}).", addr);
+        }
+        Err(e) => {
+            eprintln!("Error sending stop signal: {}", e);
+        }
+    }
+}
+
+/// `adaclaw status` — Query daemon status via gateway API.
+///
+/// Reads `gateway.bind` from config.toml and sends `GET /v1/status`.
+/// Prints a summary if the daemon is running, or reports it as not running.
+async fn cmd_status() {
+    let cfg = config::Config::load();
+    let addr = &cfg.gateway.bind;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("http://{}/v1/status", addr);
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                println!("✅ Daemon is running (http://{})\n{}", addr, body);
+            } else {
+                eprintln!(
+                    "⚠️  Gateway responded with HTTP {}: {}",
+                    resp.status(),
+                    resp.text().await.unwrap_or_default()
+                );
+            }
+        }
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            println!("ℹ️  Daemon not running (could not connect to http://{}).", addr);
+            println!("   Run `adaclaw run` or `adaclaw daemon start` to start the daemon.");
+        }
+        Err(e) => {
+            eprintln!("Error querying status: {}", e);
+        }
+    }
 }
 
 /// `adaclaw config check [--file <path>]`

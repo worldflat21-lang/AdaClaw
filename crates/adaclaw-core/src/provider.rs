@@ -24,6 +24,14 @@ pub struct ChatRequest<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub content: String,
+    /// Chain-of-thought reasoning text returned by thinking/reasoning models
+    /// (DeepSeek-R1, Kimi K2.5, QwQ, etc.).  `None` for standard models.
+    ///
+    /// Sourced from either:
+    ///   • the `reasoning_content` field in the API response, or
+    ///   • text inside `<think>…</think>` tags stripped from `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[async_trait]
@@ -47,5 +55,19 @@ pub trait Provider: Send + Sync {
     ) -> Result<String>;
     async fn warmup(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Dynamically discover models available from this provider.
+    ///
+    /// Calls `GET {base_url}/v1/models` (OpenAI-compatible) and returns the
+    /// list of model IDs.  Providers that do not support model listing should
+    /// keep the default `Ok(None)` implementation.
+    ///
+    /// This mirrors the "dynamic model discovery" feature found in other
+    /// agents (Moltis), useful for Ollama (locally installed models vary per
+    /// machine) and OpenRouter (hundreds of models, impossible to enumerate
+    /// statically).
+    async fn list_models(&self) -> Result<Option<Vec<String>>> {
+        Ok(None)
     }
 }

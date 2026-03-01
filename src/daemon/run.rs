@@ -15,14 +15,15 @@
 //! 12. 等待 Ctrl-C → 优雅关闭
 
 use crate::agents::delegate::DelegateTool;
-use crate::agents::engine::AgentEngine;
 use crate::agents::instance::AgentInstance;
 use crate::agents::registry::AgentRegistry;
+use adaclaw_core::memory::Memory;
 use crate::bus::queue::AppMessageBus;
 use crate::bus::router::AgentRouter;
 use crate::config::schema::{AgentConfig, Config, McpServerConfig as SchemaMcpServerConfig};
 use crate::cron::scheduler::HeartbeatScheduler;
 use crate::observability::{self, ObserverEvent};
+use crate::state::StateManager;
 use adaclaw_channels::manager::ChannelManager;
 use adaclaw_core::channel::{InboundMessage, MessageBus, MessageContent, OutboundMessage};
 use adaclaw_memory::factory::{create_memory, create_memory_with_config, MemoryFactoryConfig};
@@ -59,7 +60,8 @@ pub async fn start_daemon() -> Result<()> {
     );
 
     if let Some(ws) = &config.security.workspace {
-        std::env::set_var("ADACLAW_WORKSPACE", ws);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADACLAW_WORKSPACE", ws) };
     }
 
     // ── 2. 安全子系统初始化 ────────────────────────────────────────────────────
@@ -176,7 +178,9 @@ pub async fn start_daemon() -> Result<()> {
         embed_api_key: config.memory.embed_api_key.as_deref(),
         embed_base_url: config.memory.embed_base_url.as_deref(),
     };
-    let _memory = match create_memory_with_config(&mem_cfg) {
+    // P0-2 Fix: 去掉 `_memory` 下划线前缀，改为有名变量并传入 dispatch loop
+    // Arc::from(Box<dyn Memory>) 正确执行 unsized coercion → Arc<dyn Memory>
+    let memory: Arc<dyn Memory> = match create_memory_with_config(&mem_cfg) {
         Ok(m) => {
             info!(
                 backend = %config.memory.backend,
@@ -184,11 +188,11 @@ pub async fn start_daemon() -> Result<()> {
                 embedding = %config.memory.embedding_provider,
                 "Memory backend initialised"
             );
-            Arc::new(m)
+            Arc::from(m)
         }
         Err(e) => {
             warn!("Failed to open memory backend: {}. Falling back to none.", e);
-            Arc::new(create_memory("none", "").expect("none memory always succeeds"))
+            Arc::from(create_memory("none", "").expect("none memory always succeeds"))
         }
     };
 
@@ -278,6 +282,10 @@ pub async fn start_daemon() -> Result<()> {
 
         match AgentInstance::new(agent_id, agent_cfg, provider) {
             Ok(instance) => {
+                // 注入记忆后端：memory_store / memory_recall / memory_forget 工具
+                // 通过 with_memory() 将 Arc<dyn Memory> 传入 AgentInstance，
+                // build_tools() 调用时会将其透传给三个 memory 工具。
+                let instance = instance.with_memory(Arc::clone(&memory));
                 info!(
                     agent_id = %agent_id,
                     model = %agent_cfg.model,
@@ -298,8 +306,8 @@ pub async fn start_daemon() -> Result<()> {
         warn!("No agents registered! Creating a fallback assistant agent.");
         if let Some(provider) = providers.values().next().cloned() {
             let cfg = AgentConfig::default();
-            if let Ok(inst) = AgentInstance::new("assistant", &cfg, provider) {
-                registry.insert(inst);
+        if let Ok(inst) = AgentInstance::new("assistant", &cfg, provider) {
+                registry.insert(inst.with_memory(Arc::clone(&memory)));
             }
         }
     }
@@ -313,14 +321,30 @@ pub async fn start_daemon() -> Result<()> {
     let registry = Arc::new(registry);
 
     // ── 7. Message Bus + AgentRouter ───────────────────────────────────────────
-    let (inbound_tx, inbound_rx) = mpsc::channel::<InboundMessage>(256);
-    let (outbound_tx, _) = broadcast::channel::<OutboundMessage>(256);
+    // Phase 14-P2-2: Bounded channels with explicit capacity (1024 messages).
+    // Capacity was 256; 1024 provides headroom for burst traffic while still
+    // applying meaningful backpressure.  queue.rs adds a 200ms send timeout.
+    let (inbound_tx, inbound_rx) = mpsc::channel::<InboundMessage>(1024);
+    let (outbound_tx, _) = broadcast::channel::<OutboundMessage>(1024);
+
+    // P0-3 + P0-4: 在 bus 消费 inbound_tx/outbound_tx 之前克隆，供 Gateway 注入
+    let inbound_tx_for_gw = inbound_tx.clone();
+    let outbound_tx_for_gw = outbound_tx.clone();
+
     let bus = Arc::new(AppMessageBus::new(
         inbound_tx,
         outbound_tx,
         config.security.allowlist.clone(),
     ));
     let agent_router = Arc::new(AgentRouter::new(config.routing.clone()));
+
+    // P0-3: 注入 Bearer token（配置为 None 时放行所有请求，并打印警告）
+    adaclaw_server::set_bearer_token(config.gateway.bearer_token.clone());
+
+    // P0-4: 注入消息总线，使 POST /v1/chat 端点可与 Agent 通信
+    adaclaw_server::set_chat_bus(inbound_tx_for_gw, outbound_tx_for_gw);
+
+    info!("Gateway: Bearer token auth and chat bus configured");
 
     // ── 8. 渠道管理器 ──────────────────────────────────────────────────────────
     let mut channel_manager = ChannelManager::new();
@@ -416,6 +440,33 @@ pub async fn start_daemon() -> Result<()> {
                 channel_manager.register(ch);
                 info!("Registered Webhook channel '{}' on port {}", chan_name, port);
             }
+            // P1-1 Fix: WhatsApp 渠道注册（之前遗漏）
+            "whatsapp" => {
+                if let Some(access_token) = &ch_cfg.token {
+                    let phone_number_id = ch_cfg.extra.get("phone_number_id")
+                        .cloned().unwrap_or_default();
+                    let verify_token = ch_cfg.extra.get("verify_token")
+                        .cloned().unwrap_or_default();
+                    let app_secret = ch_cfg.webhook_secret.clone();
+                    let port: u16 = ch_cfg.extra.get("webhook_port")
+                        .and_then(|s| s.parse().ok()).unwrap_or(9005);
+                    let path = ch_cfg.extra.get("webhook_path")
+                        .cloned().unwrap_or_else(|| "/whatsapp".to_string());
+                    let ch = Arc::new(adaclaw_channels::whatsapp::WhatsAppChannel::new(
+                        access_token.clone(),
+                        phone_number_id,
+                        verify_token,
+                        app_secret,
+                        ch_cfg.allow_from.clone(),
+                        port,
+                        path,
+                    ));
+                    channel_manager.register(ch);
+                    info!("Registered WhatsApp channel '{}' on port {}", chan_name, port);
+                } else {
+                    warn!("WhatsApp channel '{}' has no token (access_token), skipping", chan_name);
+                }
+            }
             other => {
                 warn!("Unknown channel kind '{}' for '{}', skipping", other, chan_name);
             }
@@ -489,6 +540,21 @@ pub async fn start_daemon() -> Result<()> {
         None
     };
 
+    // ── Phase 10+: StateManager — 持久化最近活跃渠道追踪 ──────────────────────
+    //
+    // 对标 picoclaw pkg/state/state.go。
+    // 追踪最近一次真实用户消息的 (channel, session_id)，
+    // 供 Heartbeat 在 target_channel 未配置时动态回传结果。
+    let workspace_path = std::path::Path::new(
+        config.security.workspace.as_deref().unwrap_or("workspace"),
+    );
+    let state_manager = Arc::new(StateManager::new(workspace_path));
+    info!(
+        path = %workspace_path.join("state").join("state.json").display(),
+        last_channel = ?state_manager.get_last_channel(),
+        "StateManager initialized"
+    );
+
     // ── Phase 10: Heartbeat 调度器 ─────────────────────────────────────────────
     if config.heartbeat.enabled {
         let heartbeat_scheduler = HeartbeatScheduler::new(
@@ -499,7 +565,14 @@ pub async fn start_daemon() -> Result<()> {
                 .as_deref()
                 .unwrap_or("workspace")
                 .to_string(),
-        );
+        )
+        // 注入 StateManager：当 target_channel 未配置时动态解析最近活跃渠道
+        .with_state(Arc::clone(&state_manager))
+        // 注入 AgentRegistry + AppMessageBus 以支持 Long task 子 Agent 生成
+        // （HEARTBEAT.md 中 `## Long Tasks` 下的任务将在独立 Tokio 任务中执行）
+        .with_registry(Arc::clone(&registry))
+        .with_spawn_bus(Arc::clone(&bus));
+
         let bus_heartbeat: Arc<dyn MessageBus> = Arc::clone(&bus) as Arc<dyn MessageBus>;
         let cancel_hb = cancel.clone();
         tokio::spawn(async move {
@@ -535,6 +608,8 @@ pub async fn start_daemon() -> Result<()> {
         observer_clone,
         tracer_clone,
         Arc::clone(&mcp_tools),
+        Arc::clone(&memory), // P0-1 + P0-2 Fix: 传入记忆后端
+        state_manager,       // StateManager：追踪最近活跃渠道
         cancel_agent,
     ));
 
@@ -570,6 +645,8 @@ async fn agent_dispatch_loop(
     observer: Arc<dyn observability::Observer>,
     tracer: Option<Arc<crate::observability::RuntimeTracer>>,
     mcp_tools: Arc<Vec<adaclaw_tools::mcp::McpTool>>,
+    memory: Arc<dyn Memory>,       // P0-1 + P0-2: 持久记忆后端
+    state: Arc<StateManager>,      // StateManager：追踪最近活跃渠道（对标 picoclaw pkg/state）
     cancel: CancellationToken,
 ) {
     loop {
@@ -579,6 +656,16 @@ async fn agent_dispatch_loop(
                 if msg.channel == "system" {
                     handle_system_message(msg, &bus);
                     continue;
+                }
+
+                // ── StateManager 更新：记录最近活跃渠道 ──────────────────────
+                // 跳过内部渠道（heartbeat sender / system:* 前缀）
+                // 供 Heartbeat 在 target_channel 未配置时动态回传结果
+                if msg.sender_id != "heartbeat"
+                    && !msg.channel.starts_with("system:")
+                    && msg.channel != "system"
+                {
+                    state.update_last_active(&msg.channel, &msg.session_id);
                 }
 
                 // ── Observe inbound message ───────────────────────────────────
@@ -730,6 +817,12 @@ async fn agent_dispatch_loop(
                     model: model.clone(),
                 });
 
+                // ── P0-1 Fix: 获取持久 engine（含对话历史 + 记忆后端）────────
+                // - 首次调用（新 session）→ 创建新 engine，附加 memory
+                // - 后续调用（已有 session）→ 返回同一 engine，历史完整保留
+                // - AsyncMutex 保证同一 session 内消息串行处理
+                let engine_arc = instance.get_or_create_engine(&session_id, Some(Arc::clone(&memory)));
+
                 // ── spawn：每条消息独立任务 ────────────────────────────────────
                 let turn_start = std::time::Instant::now();
                 tokio::spawn(async move {
@@ -748,7 +841,8 @@ async fn agent_dispatch_loop(
                         return;
                     }
 
-                    let engine = AgentEngine::new();
+                    // P0-1: 锁定持久 engine（同一 session 串行化；跨轮次历史保留）
+                    let engine = engine_arc.lock().await;
                     let result = engine
                         .run_tool_loop_with_options(
                             provider.as_ref(),
@@ -760,6 +854,7 @@ async fn agent_dispatch_loop(
                             Some(max_iterations),
                         )
                         .await;
+                    drop(engine); // 显式释放锁，让其他 session 消息可继续处理
 
                     let duration = turn_start.elapsed();
 
@@ -821,17 +916,34 @@ async fn agent_dispatch_loop(
                                 message: e.to_string(),
                             });
 
-                            if let Some(ref logger) = audit_ref {
-                                logger.log(
-                                    adaclaw_security::audit::AuditEvent::new(
-                                        AuditKind::AgentError {
-                                            agent_id: agent_id_owned.clone(),
-                                            error: e.to_string(),
-                                        }
-                                    ).with_agent(&agent_id_owned)
-                                );
-                            }
-                        }
+                    if let Some(ref logger) = audit_ref {
+                        logger.log(
+                            adaclaw_security::audit::AuditEvent::new(
+                                AuditKind::AgentError {
+                                    agent_id: agent_id_owned.clone(),
+                                    error: e.to_string(),
+                                }
+                            ).with_agent(&agent_id_owned)
+                        );
+                    }
+
+                    // Phase 14-P3-3: Always respond to approved senders — no silent failures.
+                    // Moltis CLAUDE.md: "Always respond to approved senders — no silent failures."
+                    // When the agent loop errors, send a clear message so the user knows
+                    // what happened instead of receiving no response at all.
+                    let error_out = OutboundMessage {
+                        id: Uuid::new_v4(),
+                        target_channel,
+                        target_session_id: session_id,
+                        content: MessageContent::Text(
+                            "⚠️ AI service temporarily unavailable. Please try again later.".to_string()
+                        ),
+                        reply_to,
+                    };
+                    if let Err(send_err) = bus_ref.send_outbound(error_out) {
+                        warn!(error = %send_err, "Failed to send agent error response to user");
+                    }
+                }
                     }
                 });
             }

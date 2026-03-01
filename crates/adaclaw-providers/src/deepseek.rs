@@ -12,12 +12,14 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use crate::registry::ProviderSpec;
 use reqwest::Client;
+use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
 
 const DEFAULT_BASE_URL: &str = "https://api.deepseek.com/v1";
 
 pub struct DeepSeekProvider {
-    key: Option<String>,
+    /// Phase 14-P1-2: API key wrapped in `Secret<String>`.
+    key: Option<Secret<String>>,
     base_url: String,
     client: Client,
 }
@@ -25,7 +27,7 @@ pub struct DeepSeekProvider {
 impl DeepSeekProvider {
     pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
         Self {
-            key: key.map(|s| s.to_string()),
+            key: key.map(|s| Secret::new(s.to_string())),
             base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
             client: Client::new(),
         }
@@ -71,7 +73,7 @@ impl Provider for DeepSeekProvider {
             .json(&body);
 
         if let Some(key) = &self.key {
-            builder = builder.header("Authorization", format!("Bearer {}", key));
+            builder = builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
         }
 
         let resp = builder.send().await?;
@@ -88,7 +90,7 @@ impl Provider for DeepSeekProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content })
+        Ok(ChatResponse { content, reasoning_content: None })
     }
 
     async fn chat_with_system(
@@ -110,18 +112,18 @@ impl Provider for DeepSeekProvider {
     }
 }
 
-pub const SPEC: ProviderSpec = ProviderSpec {
-    name: "deepseek",
-    aliases: &[
-        "deepseek-chat",
-        "deepseek-reasoner",
-        "ds",
-    ],
-    local: false,
-    capabilities: ProviderCapabilities {
-        native_tool_calling: true,
-        vision: false,
-        streaming: true,
-    },
-    factory: |key, url| Box::new(DeepSeekProvider::new(key, url)),
-};
+/// Legacy spec — functionality is now handled by `openai_compat::spec_for("deepseek")`.
+#[allow(deprecated)]
+pub fn spec() -> ProviderSpec {
+    ProviderSpec {
+        name: "deepseek",
+        aliases: &["deepseek-chat", "deepseek-reasoner", "ds"],
+        local: false,
+        capabilities: ProviderCapabilities {
+            native_tool_calling: true,
+            vision: false,
+            streaming: true,
+        },
+        factory: Box::new(|key, url| Box::new(DeepSeekProvider::new(key, url))),
+    }
+}

@@ -2,6 +2,14 @@ use adaclaw_core::channel::{InboundMessage, MessageBus, OutboundMessage};
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
+use tracing::warn;
+
+/// Phase 14-P2-2: Backpressure timeout for send_inbound.
+///
+/// If the inbound channel is full for longer than this duration, the message
+/// is dropped and a warning is logged.  This prevents slow/busy Agent loops
+/// from blocking inbound channel goroutines indefinitely.
+const BACKPRESSURE_TIMEOUT_MS: u64 = 200;
 
 #[derive(Clone)]
 pub struct AppMessageBus {
@@ -46,10 +54,34 @@ impl MessageBus for AppMessageBus {
             ));
         }
 
-        self.inbound_tx
-            .send(msg)
-            .await
-            .map_err(|e| anyhow::anyhow!("bus error: {}", e))
+        // Phase 14-P2-2: Bounded channel with backpressure timeout.
+        //
+        // `mpsc::Sender::send()` blocks indefinitely when the channel is full
+        // (bounded channel with capacity 1024 — see daemon/run.rs).  To prevent
+        // a slow agent loop from stalling inbound channel goroutines, we add a
+        // short timeout.  If the channel is full after BACKPRESSURE_TIMEOUT_MS,
+        // the message is dropped and a warning is logged.
+        //
+        // Channels should forward the warning to the user if they detect
+        // a send_inbound failure (return value is Err).
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(BACKPRESSURE_TIMEOUT_MS),
+            self.inbound_tx.send(msg),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(anyhow::anyhow!("MessageBus closed: {}", e)),
+            Err(_timeout) => {
+                warn!(
+                    "MessageBus inbound channel full (capacity 1024) after {}ms — message dropped",
+                    BACKPRESSURE_TIMEOUT_MS
+                );
+                // Return Ok so callers don't surface a misleading error to users.
+                // The warning log is the signal for operators.
+                Ok(())
+            }
+        }
     }
 }
 
@@ -59,9 +91,18 @@ impl AppMessageBus {
     /// **仅供内部 Agent 系统使用**（`channel = "system"` 的消息）。
     /// 外部渠道消息必须使用 `send_inbound()` 以确保白名单校验。
     pub async fn send_inbound_bypass(&self, msg: InboundMessage) -> Result<()> {
-        self.inbound_tx
-            .send(msg)
-            .await
-            .map_err(|e| anyhow::anyhow!("bus bypass error: {}", e))
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(BACKPRESSURE_TIMEOUT_MS),
+            self.inbound_tx.send(msg),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(anyhow::anyhow!("bus bypass error: {}", e)),
+            Err(_) => {
+                warn!("MessageBus bypass: channel full, dropping system message");
+                Ok(())
+            }
+        }
     }
 }

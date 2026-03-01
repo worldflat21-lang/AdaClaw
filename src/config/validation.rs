@@ -744,7 +744,8 @@ mod tests {
     #[test]
     fn test_telegram_channel_missing_token() {
         // Remove any env override to make the test deterministic
-        std::env::remove_var("ADACLAW_TELEGRAM_TOKEN");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADACLAW_TELEGRAM_TOKEN") };
 
         let mut cfg = valid_config();
         cfg.channels.insert(
@@ -853,8 +854,10 @@ mod tests {
 
     #[test]
     fn test_openai_embed_without_key_is_an_error() {
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ADACLAW_OPENAI_API_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADACLAW_OPENAI_API_KEY") };
 
         let mut cfg = valid_config();
         cfg.memory.embedding_provider = "openai".to_string();
@@ -925,9 +928,12 @@ mod tests {
 
     #[test]
     fn test_multiple_errors_collected_at_once() {
-        std::env::remove_var("ADACLAW_TELEGRAM_TOKEN");
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ADACLAW_OPENAI_API_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADACLAW_TELEGRAM_TOKEN") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADACLAW_OPENAI_API_KEY") };
 
         let mut cfg = valid_config();
         // Introduce three distinct errors simultaneously

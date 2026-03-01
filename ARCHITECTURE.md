@@ -85,7 +85,6 @@ adaclaw/
 ├── .cargo/
 │   └── config.toml              # release profile: opt-level="z", lto, strip
 ├── ARCHITECTURE.md              # 本文件
-├── TASKS.md                     # 分阶段实施计划
 ├── README.md
 ├── LICENSE                      # Apache-2.0（单一许可证文件）
 ├── Dockerfile                   # 多阶段构建（builder + debian:bookworm-slim runtime）
@@ -114,7 +113,7 @@ adaclaw/
 │   │       ├── openrouter.rs    # OpenRouter — 单 key 访问数百模型
 │   │       ├── deepseek.rs      # DeepSeek (deepseek-chat / deepseek-reasoner)
 │   │       ├── ollama.rs        # Ollama (本地推理)
-│   │       └── compatible.rs    # 通用 OpenAI-compatible 端点（规划）
+│   │       └── openai_compat.rs # 通用 OpenAI-compatible 端点
 │   │
 │   ├── adaclaw-channels/            # 渠道实现
 │   │   └── src/
@@ -128,11 +127,10 @@ adaclaw/
 │   │       ├── feishu.rs        # 飞书/Lark（事件订阅，tenant_access_token 自动刷新）
 │   │       ├── wechat_work.rs   # 企业微信（SHA1验证 + AES-256-CBC block_size=32 解密）
 │   │       ├── webhook.rs       # 通用 HTTP Webhook（HMAC可选，标准JSON入站格式）
+│   │       ├── whatsapp.rs      # WhatsApp Business Cloud API（Meta Webhook）
+│   │       ├── email.rs         # Email（IMAP+SMTP，async-imap + lettre）
+│   │       ├── matrix.rs        # Matrix（Client-Server API，E2EE 可选，feature = "matrix"）
 │   │       └── cli.rs           # 本地 CLI 渠道（交互式 REPL）
-│   │   # ↓ Phase 9 规划（未实现）
-│   │   # whatsapp.rs   WhatsApp Business Cloud API（Meta Webhook）
-│   │   # email.rs      Email（IMAP+SMTP，async-imap + lettre）
-│   │   # matrix.rs     Matrix（Client-Server API，E2EE 可选，feature = "matrix"）
 │   │
 │   ├── adaclaw-memory/              # 记忆后端
 │   │   └── src/
@@ -145,14 +143,13 @@ adaclaw/
 │   │       ├── consolidation.rs # 记忆刷写整理（两阶段LLM去重合并）
 │   │       ├── query.rs         # QMD 查询分解（复杂查询→子查询→N路RRF）
 │   │       ├── topic.rs         # Topic 摘要辅助
+│   │       ├── session_store.rs # 会话存储
 │   │       ├── embeddings/
 │   │       │   ├── mod.rs       # EmbeddingProvider trait
 │   │       │   ├── fastembed.rs # 本地推理（AllMiniLML6V2，384维，spawn_blocking）
 │   │       │   ├── openai.rs    # OpenAI text-embedding-3-small
 │   │       │   └── none.rs      # 无嵌入（降级为纯FTS5）
 │   │       └── rrf.rs           # Reciprocal Rank Fusion 算法（k=60，独立模块）
-│   │   # ↓ Phase 12 规划（闭源版本）
-│   │   # postgres.rs   PostgreSQL 后端（生产级分布式部署）
 │   │
 │   ├── adaclaw-tools/               # 工具实现
 │   │   └── src/
@@ -161,13 +158,12 @@ adaclaw/
 │   │       ├── shell.rs         # shell 命令执行
 │   │       ├── file.rs          # file_read / write / list / edit
 │   │       ├── memory_tools.rs  # memory_store / recall / forget
-│   │       └── http.rs          # http_request
-│   │   # ↓ Phase 10 规划（未实现）
-│   │   # mcp/             MCP 客户端（McpClient + McpTool，stdio + HTTP/SSE transport）
-│   │   # ↓ Phase 12 规划（闭源版本）
-│   │   # browser.rs       browser_open（可选，闭源版本）
-│   │   # screenshot.rs    屏幕截图（可选，闭源版本）
-│   │   # hardware/        GPIO / I2C / Arduino（feature-gated，闭源版本）
+│   │       ├── http.rs          # http_request
+│   │       └── mcp/             # MCP 客户端（McpClient + McpTool，stdio + HTTP/SSE transport）
+│   │           ├── mod.rs
+│   │           ├── loader.rs
+│   │           ├── http.rs
+│   │           └── stdio.rs
 │   │   # cron_tools.rs 工具形式调用 cron（cron 逻辑在 src/cron/ 主二进制中）
 │   │
 │   │   注：Agent 间委托工具（DelegateTool）在 src/agents/delegate.rs，不在此 crate
@@ -186,6 +182,7 @@ adaclaw/
 │   │       ├── scrub.rs         # 凭证脱敏（26种模式正则）
 │   │       ├── ratelimit.rs     # 速率限制（per_user/channel/cost/actions）
 │   │       ├── audit.rs         # 结构化审计日志（JSONL，可接 SIEM）
+│   │       ├── ssrf.rs          # SSRF 防护
 │   │       └── approval.rs      # 工具执行审批（AutonomyLevel: ReadOnly/Supervised/Full）
 │   │
 │   │   注：Gateway 配对码（Pairing）实现在 crates/adaclaw-server/src/pairing.rs
@@ -199,6 +196,7 @@ adaclaw/
 │           │   ├── chat.rs      # POST /v1/chat
 │           │   ├── status.rs    # GET  /v1/status
 │           │   ├── stop.rs      # POST /v1/stop (Estop)
+│           │   ├── whatsapp.rs  # WhatsApp Webhook 回调
 │           │   └── metrics.rs   # GET /metrics (Prometheus)
 │           ├── pairing.rs       # GET /pair (配对码)
 │           └── middleware.rs    # Auth / RateLimit / CORS
@@ -210,7 +208,9 @@ adaclaw/
     ├── main.rs
     ├── config/
     │   ├── mod.rs               # 配置加载入口（toml + 环境变量覆盖）
-    │   └── schema.rs            # 完整配置结构体（Config + 所有子配置）
+    │   ├── schema.rs            # 完整配置结构体（Config + 所有子配置）
+    │   ├── validation.rs        # 配置校验
+    │   └── migration.rs         # 配置迁移
     ├── bus/
     │   ├── mod.rs               # MessageBus（mpsc sender + broadcast sender）
     │   ├── router.rs            # AgentRouter + RoutingRule（3级优先级）
@@ -223,6 +223,7 @@ adaclaw/
     │   ├── engine.rs            # Tool Call Loop（核心：并行执行/去重/多格式解析）
     │   ├── parser.rs            # 工具调用多格式解析器（OpenAI/XML/Markdown/GLM）
     │   ├── compact.rs           # Congee 滚动摘要（rolling_compact）
+    │   ├── message_tool.rs      # 消息发送工具
     │   └── delegate.rs          # DelegateTool（异步 Agent 间任务委托）
     ├── daemon/
     │   ├── mod.rs
@@ -231,7 +232,8 @@ adaclaw/
     ├── cli/
     │   ├── mod.rs               # CLI 入口（clap 子命令分发）
     │   ├── doctor.rs            # adaclaw doctor（全系统诊断）
-    │   └── onboard.rs           # adaclaw onboard（引导向导）
+    │   ├── onboard.rs           # adaclaw onboard（引导向导）
+    │   └── skill.rs             # adaclaw skill（技能管理）
     │   # 注：chat/run/status/stop/config 等命令在 mod.rs 或 main.rs 中直接实现
     ├── observability/
     │   ├── mod.rs               # create_observer() 工厂 + 全局 observer 单例
@@ -246,6 +248,8 @@ adaclaw/
     ├── identity/
     │   ├── mod.rs
     │   └── loader.rs            # IDENTITY.md / 配置
+    ├── state/
+    │   └── mod.rs               # 运行时状态
     ├── cron/
     │   ├── mod.rs
     │   └── scheduler.rs
@@ -661,19 +665,7 @@ panic = "abort"
 | MCP 工具协议 | **✅ 原生支持** | ❌ | ❌ | ✅ | ❌ |
 | 二进制大小 | **<10MB** | <9MB | ~8MB | N/A | ~28MB |
 | Web UI | **规划** | ❌ | ❌ | ❌ | ✅ |
-| 开源许可 | **MIT/Apache** | MIT | MIT | MIT | AGPL |
 
 ---
 
-## 十、后期扩展规划
-
-- **Web UI**：Leptos（Rust全栈）或 SvelteKit，提供 Chat/记忆/配置/日志界面
-- **多租户**：per-user Agent 隔离，适合 SaaS 部署
-- **插件市场**：工具/渠道/Provider 动态加载（.so / WASM）
-- **硬件支持**：GPIO / I2C / SPI / Arduino 上传（feature-gated）
-- **语音渠道**：WebRTC + Whisper ASR + TTS
-- **文档 RAG**：PDF/网页/代码库索引
-
----
-
-*最后更新：2026-02-28（修正目录结构：删除不存在的 policy.rs/pairing.rs/message.rs/context.rs/otel.rs/env.rs 等幻影文件；补充 Phase 4-7 实际新增文件 base.rs/delegate.rs/global.rs/consolidation.rs/query.rs/topic.rs 等；区分 Phase 9/10/12 规划文件与已实现文件；修正 Supervised 模式在消息渠道的行为说明；修正竞品表 zeroclaw 安全项标注）*
+*最后更新：2026-03-01*

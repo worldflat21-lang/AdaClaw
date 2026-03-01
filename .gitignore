@@ -28,6 +28,9 @@ config.toml
 .env
 secret.key
 
+# Internal planning files (not for public)
+TASKS.md
+
 # Databases and Local State
 *.db
 *.db-shm

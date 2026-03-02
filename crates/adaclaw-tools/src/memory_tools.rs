@@ -56,7 +56,9 @@ impl MemoryStoreTool {
 
     /// Create with an injected memory backend.
     pub fn with_memory(memory: Arc<dyn Memory>) -> Self {
-        Self { memory: Some(memory) }
+        Self {
+            memory: Some(memory),
+        }
     }
 }
 
@@ -110,7 +112,10 @@ impl Tool for MemoryStoreTool {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some("memory_store: 'key' is required and must be a non-empty string".to_string()),
+                    error: Some(
+                        "memory_store: 'key' is required and must be a non-empty string"
+                            .to_string(),
+                    ),
                 });
             }
         };
@@ -121,7 +126,10 @@ impl Tool for MemoryStoreTool {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some("memory_store: 'content' is required and must be a non-empty string".to_string()),
+                    error: Some(
+                        "memory_store: 'content' is required and must be a non-empty string"
+                            .to_string(),
+                    ),
                 });
             }
         };
@@ -142,7 +150,10 @@ impl Tool for MemoryStoreTool {
             }
         };
 
-        match memory.store(key, content, category.clone(), None, None).await {
+        match memory
+            .store(key, content, category.clone(), None, None)
+            .await
+        {
             Ok(()) => Ok(ToolResult {
                 success: true,
                 output: format!(
@@ -186,7 +197,9 @@ impl MemoryRecallTool {
     }
 
     pub fn with_memory(memory: Arc<dyn Memory>) -> Self {
-        Self { memory: Some(memory) }
+        Self {
+            memory: Some(memory),
+        }
     }
 }
 
@@ -235,7 +248,10 @@ impl Tool for MemoryRecallTool {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some("memory_recall: 'query' is required and must be a non-empty string".to_string()),
+                    error: Some(
+                        "memory_recall: 'query' is required and must be a non-empty string"
+                            .to_string(),
+                    ),
                 });
             }
         };
@@ -310,7 +326,9 @@ impl MemoryForgetTool {
     }
 
     pub fn with_memory(memory: Arc<dyn Memory>) -> Self {
-        Self { memory: Some(memory) }
+        Self {
+            memory: Some(memory),
+        }
     }
 }
 
@@ -353,7 +371,10 @@ impl Tool for MemoryForgetTool {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some("memory_forget: 'key' is required and must be a non-empty string".to_string()),
+                    error: Some(
+                        "memory_forget: 'key' is required and must be a non-empty string"
+                            .to_string(),
+                    ),
                 });
             }
         };
@@ -377,7 +398,10 @@ impl Tool for MemoryForgetTool {
             }),
             Ok(false) => Ok(ToolResult {
                 success: true,
-                output: format!("Memory entry '{}' not found (may have already been deleted).", key),
+                output: format!(
+                    "Memory entry '{}' not found (may have already been deleted).",
+                    key
+                ),
                 error: None,
             }),
             Err(e) => Ok(ToolResult {

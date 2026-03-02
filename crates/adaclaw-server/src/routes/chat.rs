@@ -29,9 +29,9 @@
 
 use adaclaw_core::channel::{InboundMessage, MessageContent, OutboundMessage};
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -121,7 +121,9 @@ pub async fn chat(body: Option<Json<ChatRequest>>) -> Response {
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "Agent bus not connected — outbound channel not initialised"})),
+                Json(
+                    json!({"error": "Agent bus not connected — outbound channel not initialised"}),
+                ),
             )
                 .into_response();
         }
@@ -161,34 +163,31 @@ pub async fn chat(body: Option<Json<ChatRequest>>) -> Response {
     // 等待匹配 session_id 的出站回复（最长 60 秒）
     const TIMEOUT_SECS: u64 = 60;
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(TIMEOUT_SECS),
-        async move {
-            loop {
-                match outbound_rx.recv().await {
-                    Ok(out) if out.target_session_id == session_id_clone => {
-                        return Ok(out);
-                    }
-                    Ok(_) => {
-                        // 其他 session 的消息，继续等待
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        // 广播滞后：已丢弃 n 条旧消息，继续接收
-                        tracing::warn!(
-                            skipped = n,
-                            "Gateway chat: broadcast lagged, {} messages skipped",
-                            n
-                        );
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err("outbound channel closed");
-                    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(TIMEOUT_SECS), async move {
+        loop {
+            match outbound_rx.recv().await {
+                Ok(out) if out.target_session_id == session_id_clone => {
+                    return Ok(out);
+                }
+                Ok(_) => {
+                    // 其他 session 的消息，继续等待
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    // 广播滞后：已丢弃 n 条旧消息，继续接收
+                    tracing::warn!(
+                        skipped = n,
+                        "Gateway chat: broadcast lagged, {} messages skipped",
+                        n
+                    );
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err("outbound channel closed");
                 }
             }
-        },
-    )
+        }
+    })
     .await;
 
     match result {

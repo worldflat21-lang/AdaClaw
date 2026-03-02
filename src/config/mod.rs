@@ -3,4 +3,4 @@ pub mod schema;
 pub mod validation;
 
 pub use schema::Config;
-pub use validation::{validate, ValidationError};
+pub use validation::{ValidationError, validate};

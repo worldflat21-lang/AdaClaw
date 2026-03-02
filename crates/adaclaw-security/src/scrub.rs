@@ -24,8 +24,7 @@ use std::sync::LazyLock;
 /// Run BEFORE `SENSITIVE_KV_REGEX` so that the word "Bearer" is not itself
 /// mistakenly treated as part of a key=value pair.
 static BEARER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(Bearer\s+)([A-Za-z0-9\-_\.+/]{10,}=*)")
-        .expect("Invalid BEARER_REGEX")
+    Regex::new(r"(?i)(Bearer\s+)([A-Za-z0-9\-_\.+/]{10,}=*)").expect("Invalid BEARER_REGEX")
 });
 
 /// Matches key=value and key: value pairs for a comprehensive list of sensitive
@@ -47,8 +46,7 @@ static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Matches URL-embedded credentials: `https://user:password@host`
 static URL_CRED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(https?://[^:@\s]+:)([^@\s]{4,})(@)")
-        .expect("Invalid URL_CRED_REGEX")
+    Regex::new(r"(?i)(https?://[^:@\s]+:)([^@\s]{4,})(@)").expect("Invalid URL_CRED_REGEX")
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -141,9 +139,7 @@ mod tests {
 
     #[test]
     fn test_bearer_header() {
-        let out = scrub_credentials(
-            "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-        );
+        let out = scrub_credentials("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
         assert!(out.contains("Bearer eyJh****"), "got: {}", out);
         assert!(!out.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
     }
@@ -185,9 +181,13 @@ mod tests {
 
     #[test]
     fn test_url_embedded_credentials() {
-        let out = scrub_credentials("Connecting to https://myuser:mysupersecretpassword@db.example.com");
+        let out =
+            scrub_credentials("Connecting to https://myuser:mysupersecretpassword@db.example.com");
         assert!(out.contains("mysu****"), "got: {}", out);
-        assert!(!out.contains("mysupersecretpassword"), "password should be scrubbed");
+        assert!(
+            !out.contains("mysupersecretpassword"),
+            "password should be scrubbed"
+        );
         assert!(out.contains("myuser:"), "username should be preserved");
         assert!(out.contains("@db.example.com"), "host should be preserved");
     }
@@ -214,7 +214,10 @@ mod tests {
         let out = scrub_credentials(input);
         assert!(!out.contains("sk-12345678"), "api_key should be scrubbed");
         assert!(!out.contains("mysecretvalue"), "secret should be scrubbed");
-        assert!(!out.contains("eyJhbGciOiJSUzI1Ni"), "bearer should be scrubbed");
+        assert!(
+            !out.contains("eyJhbGciOiJSUzI1Ni"),
+            "bearer should be scrubbed"
+        );
     }
 
     // ── Edge cases ────────────────────────────────────────────────────────────
@@ -288,7 +291,10 @@ mod tests {
         let input = "config:\n  api_key: sk-12345678abcdef\n  name: myapp";
         let out = scrub_credentials(input);
         assert!(!out.contains("sk-12345678abcdef"), "key should be scrubbed");
-        assert!(out.contains("name: myapp"), "non-secret should be preserved");
+        assert!(
+            out.contains("name: myapp"),
+            "non-secret should be preserved"
+        );
     }
 
     #[test]

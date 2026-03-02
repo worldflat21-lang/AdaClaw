@@ -30,7 +30,7 @@ use crate::agents::registry::AgentRegistry;
 use crate::bus::queue::AppMessageBus;
 use crate::config::schema::HeartbeatConfig;
 use crate::state::StateManager;
-use adaclaw_core::channel::{InboundMessage, MessageContent, MessageBus, OutboundMessage};
+use adaclaw_core::channel::{InboundMessage, MessageBus, MessageContent, OutboundMessage};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -197,7 +197,10 @@ impl HeartbeatScheduler {
         loop {
             tick.tick().await;
 
-            info!("Heartbeat tick — loading tasks from {}", heartbeat_path.display());
+            info!(
+                "Heartbeat tick — loading tasks from {}",
+                heartbeat_path.display()
+            );
 
             let content = match std::fs::read_to_string(&heartbeat_path) {
                 Ok(c) => c,
@@ -230,12 +233,10 @@ impl HeartbeatScheduler {
                             kind = "quick",
                             "Dispatching heartbeat task"
                         );
-                        if let Err(e) = Self::dispatch_task(
-                            &bus,
-                            &task.description,
-                            &channel,
-                            &session_id,
-                        ).await {
+                        if let Err(e) =
+                            Self::dispatch_task(&bus, &task.description, &channel, &session_id)
+                                .await
+                        {
                             warn!(
                                 task = %task.description,
                                 error = %e,
@@ -272,7 +273,9 @@ impl HeartbeatScheduler {
                                     &task.description,
                                     &channel,
                                     &session_id,
-                                ).await {
+                                )
+                                .await
+                                {
                                     warn!(
                                         task = %task.description,
                                         error = %e,
@@ -354,38 +357,36 @@ fn resolve_target(
     }
 
     // 优先级 2：动态读取 StateManager
-    if let Some(state) = state {
-        if let Some(last_session) = state.get_last_session_id() {
-            // 解析 "platform:user_or_chat_id" 格式
-            let channel_part = last_session
-                .splitn(2, ':')
-                .next()
-                .unwrap_or("")
-                .to_string();
+    if let Some(state) = state
+        && let Some(last_session) = state.get_last_session_id()
+    {
+        // 解析 "platform:user_or_chat_id" 格式
+        let channel_part = last_session.split(':').next().unwrap_or("").to_string();
 
-            // 过滤内部渠道（防止心跳自循环）
-            if !is_internal_channel(&channel_part) && !channel_part.is_empty() {
-                debug!(
-                    last_session = %last_session,
-                    channel = %channel_part,
-                    "Heartbeat resolved target from StateManager"
-                );
-                return (channel_part, last_session);
-            }
+        // 过滤内部渠道（防止心跳自循环）
+        if !is_internal_channel(&channel_part) && !channel_part.is_empty() {
+            debug!(
+                last_session = %last_session,
+                channel = %channel_part,
+                "Heartbeat resolved target from StateManager"
+            );
+            return (channel_part, last_session);
         }
     }
 
     // 优先级 3：回退（总线会接收但 system:heartbeat 渠道无法回复用户）
     debug!("Heartbeat: no active channel found, using system fallback");
-    ("system:heartbeat".to_string(), "heartbeat:fallback".to_string())
+    (
+        "system:heartbeat".to_string(),
+        "heartbeat:fallback".to_string(),
+    )
 }
 
 /// 判断渠道名是否为内部渠道（不应作为 Heartbeat 回传目标）。
 ///
 /// 内部渠道：`"system"`、`"cli"`、`"heartbeat"` 及以 `"system:"` 为前缀的渠道。
 fn is_internal_channel(channel: &str) -> bool {
-    matches!(channel, "system" | "cli" | "heartbeat")
-        || channel.starts_with("system:")
+    matches!(channel, "system" | "cli" | "heartbeat") || channel.starts_with("system:")
 }
 
 // ── HEARTBEAT.md 解析 ─────────────────────────────────────────────────────────
@@ -426,11 +427,7 @@ pub fn parse_heartbeat_tasks(content: &str) -> Vec<String> {
                 .or_else(|| trimmed.strip_prefix("* [ ] "))
             {
                 let task = rest.trim().to_string();
-                if task.is_empty() {
-                    None
-                } else {
-                    Some(task)
-                }
+                if task.is_empty() { None } else { Some(task) }
             } else {
                 None // 跳过已完成 [x] 和其他行
             }
@@ -477,8 +474,8 @@ pub fn parse_heartbeat_tasks_typed(content: &str) -> Vec<HeartbeatTask> {
         let trimmed = line.trim();
 
         // Detect section headers (## level-2 headers)
-        if trimmed.starts_with("## ") {
-            let header = trimmed[3..].trim().to_lowercase();
+        if let Some(header_rest) = trimmed.strip_prefix("## ") {
+            let header = header_rest.trim().to_lowercase();
             if header.starts_with("long") {
                 current_kind = TaskKind::Spawn;
             } else {
@@ -551,16 +548,19 @@ fn spawn_long_task(
 
         // ── 2. Build tool list + inject MessageTool ───────────────────────────
         let mut tools = agent.build_tools();
-        tools.insert(0, Box::new(MessageTool::new(
-            Arc::clone(&spawn_bus),
-            channel.clone(),
-            session_id.clone(),
-        )));
+        tools.insert(
+            0,
+            Box::new(MessageTool::new(
+                Arc::clone(&spawn_bus),
+                channel.clone(),
+                session_id.clone(),
+            )),
+        );
 
-        let provider  = Arc::clone(&agent.provider);
-        let model     = agent.model.clone();
-        let temp      = agent.temperature;
-        let max_iter  = agent.max_iterations;
+        let provider = Arc::clone(&agent.provider);
+        let model = agent.model.clone();
+        let temp = agent.temperature;
+        let max_iter = agent.max_iterations;
         // Append a hint to the system prompt so the agent uses MessageTool
         let system_extra = {
             let base = agent.system_extra.clone().unwrap_or_default();
@@ -593,7 +593,8 @@ fn spawn_long_task(
                 system_extra.as_deref(),
                 Some(max_iter),
             ),
-        ).await;
+        )
+        .await;
 
         // ── 4. Send final status to user ─────────────────────────────────────
         // The agent may have already called `message` for intermediate updates.
@@ -610,7 +611,7 @@ fn spawn_long_task(
                 }
             }
             Ok(Err(e)) => Some(format!("❌ Background task failed: {}", e)),
-            Err(_)     => Some("⏰ Background task timed out after 5 minutes.".to_string()),
+            Err(_) => Some("⏰ Background task timed out after 5 minutes.".to_string()),
         };
 
         if let Some(text) = final_text {
@@ -618,9 +619,7 @@ fn spawn_long_task(
                 id: Uuid::new_v4(),
                 target_channel: channel,
                 target_session_id: session_id,
-                content: MessageContent::Text(
-                    adaclaw_security::scrub::scrub_credentials(&text)
-                ),
+                content: MessageContent::Text(adaclaw_security::scrub::scrub_credentials(&text)),
                 reply_to: None,
             };
             if let Err(e) = spawn_bus.send_outbound(out) {

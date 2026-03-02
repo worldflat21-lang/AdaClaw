@@ -39,17 +39,17 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::post,
-    Json, Router,
 };
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -193,7 +193,10 @@ impl Channel for WebhookChannel {
         let path = self.webhook_path.clone();
         let app = Router::new()
             .route(&path, post(handle_webhook))
-            .route("/health/webhook", axum::routing::get(|| async { StatusCode::OK }))
+            .route(
+                "/health/webhook",
+                axum::routing::get(|| async { StatusCode::OK }),
+            )
             .with_state(state);
 
         let (tx, rx) = oneshot::channel::<()>();
@@ -209,7 +212,9 @@ impl Channel for WebhookChannel {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
-            .with_graceful_shutdown(async { rx.await.ok(); })
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            })
             .await
             .map_err(|e| anyhow!("Webhook HTTP server error: {}", e))?;
 
@@ -222,7 +227,10 @@ impl Channel for WebhookChannel {
         let outbound_url = match &self.outbound_url {
             Some(u) => u.clone(),
             None => {
-                debug!(channel = "webhook", "No outbound_url configured, skipping reply");
+                debug!(
+                    channel = "webhook",
+                    "No outbound_url configured, skipping reply"
+                );
                 return Ok(());
             }
         };
@@ -278,7 +286,10 @@ async fn handle_webhook(
     // HMAC 签名验证
     if !state.verify_signature(&headers, &body) {
         warn!(channel = "webhook", "Signature verification failed");
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Invalid signature" })));
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Invalid signature" })),
+        );
     }
 
     let inbound: WebhookInbound = match serde_json::from_str(&body) {

@@ -199,10 +199,10 @@ pub fn extract_tool_output(response: Value) -> ToolResult {
         let mut has_error = false;
 
         for item in content {
-            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                    parts.push(text.to_string());
-                }
+            if item.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = item.get("text").and_then(|t| t.as_str())
+            {
+                parts.push(text.to_string());
             }
         }
 
@@ -218,7 +218,11 @@ pub fn extract_tool_output(response: Value) -> ToolResult {
         let output = parts.join("\n");
         return ToolResult {
             success: !has_error,
-            output: if has_error { String::new() } else { output.clone() },
+            output: if has_error {
+                String::new()
+            } else {
+                output.clone()
+            },
             error: if has_error { Some(output) } else { None },
         };
     }

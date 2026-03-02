@@ -74,8 +74,7 @@ pub fn migrate(mut cfg: Config) -> anyhow::Result<(Config, Vec<String>)> {
     // }
 
     debug_assert_eq!(
-        cfg.config_version,
-        CURRENT_VERSION,
+        cfg.config_version, CURRENT_VERSION,
         "migrate() left config at version {}, expected {CURRENT_VERSION}",
         cfg.config_version,
     );
@@ -89,7 +88,10 @@ mod tests {
 
     fn v0_config() -> Config {
         // simulates a config file with no version field (serde default = 0)
-        Config { config_version: 0, ..Default::default() }
+        Config {
+            config_version: 0,
+            ..Default::default()
+        }
     }
 
     // ── Happy-path tests ───────────────────────────────────────────────────────
@@ -109,7 +111,10 @@ mod tests {
 
     #[test]
     fn test_current_version_is_noop() {
-        let cfg = Config { config_version: CURRENT_VERSION, ..Default::default() };
+        let cfg = Config {
+            config_version: CURRENT_VERSION,
+            ..Default::default()
+        };
         let (migrated, notes) = migrate(cfg).expect("migration should succeed");
         assert_eq!(migrated.config_version, CURRENT_VERSION);
         assert!(
@@ -133,7 +138,10 @@ mod tests {
 
     #[test]
     fn test_future_version_returns_error() {
-        let cfg = Config { config_version: CURRENT_VERSION + 1, ..Default::default() };
+        let cfg = Config {
+            config_version: CURRENT_VERSION + 1,
+            ..Default::default()
+        };
         let result = migrate(cfg);
         assert!(result.is_err(), "future version should be rejected");
         let msg = result.unwrap_err().to_string();
@@ -149,7 +157,10 @@ mod tests {
 
     #[test]
     fn test_far_future_version_returns_error() {
-        let cfg = Config { config_version: 999, ..Default::default() };
+        let cfg = Config {
+            config_version: 999,
+            ..Default::default()
+        };
         let result = migrate(cfg);
         assert!(result.is_err());
     }

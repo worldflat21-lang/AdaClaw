@@ -54,7 +54,10 @@ pub async fn recall_with_qmd(
     let sub_queries = match decompose_query(provider, model, query).await {
         Ok(qs) if !qs.is_empty() => qs,
         Ok(_) => {
-            tracing::debug!(query, "QMD returned empty decomposition, using original query");
+            tracing::debug!(
+                query,
+                "QMD returned empty decomposition, using original query"
+            );
             vec![query.to_string()]
         }
         Err(e) => {
@@ -132,11 +135,7 @@ pub async fn recall_with_qmd(
 ///
 /// Returns a list of sub-query strings.  The original query is always included
 /// as the first element so that a plain single-query recall is still covered.
-async fn decompose_query(
-    provider: &dyn Provider,
-    model: &str,
-    query: &str,
-) -> Result<Vec<String>> {
+async fn decompose_query(provider: &dyn Provider, model: &str, query: &str) -> Result<Vec<String>> {
     let system = "You are a memory retrieval assistant. \
                   Your job is to decompose a complex query into 2-4 shorter, \
                   focused sub-queries that together cover all aspects of the original. \
@@ -166,15 +165,19 @@ fn parse_sub_queries(raw: &str, original_query: &str) -> Result<Vec<String>> {
         trimmed
     };
 
-    let mut queries: Vec<String> = serde_json::from_str(json_str)
-        .unwrap_or_else(|_| {
-            // If JSON parse fails, treat each non-empty line as a sub-query
-            trimmed
-                .lines()
-                .map(|l| l.trim().trim_matches(|c| c == '"' || c == '-' || c == '*').trim().to_string())
-                .filter(|l| !l.is_empty() && l.len() > 2)
-                .collect()
-        });
+    let mut queries: Vec<String> = serde_json::from_str(json_str).unwrap_or_else(|_| {
+        // If JSON parse fails, treat each non-empty line as a sub-query
+        trimmed
+            .lines()
+            .map(|l| {
+                l.trim()
+                    .trim_matches(|c| c == '"' || c == '-' || c == '*')
+                    .trim()
+                    .to_string()
+            })
+            .filter(|l| !l.is_empty() && l.len() > 2)
+            .collect()
+    });
 
     // Always include the original query to ensure base coverage
     if !queries.iter().any(|q| q == original_query) {
@@ -259,7 +262,10 @@ mod tests {
             vec!["a".to_string(), "d".to_string()],
         ];
         let merged = merge_multiple_ranked_lists(&lists);
-        assert_eq!(merged[0], "a", "'a' appears in all lists and should rank first");
+        assert_eq!(
+            merged[0], "a",
+            "'a' appears in all lists and should rank first"
+        );
     }
 
     #[test]

@@ -18,8 +18,10 @@ resolver = "2"
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
-unwrap_used = "warn"
-expect_used = "warn"
+# unwrap_used and expect_used are allowed for now; upgrade to "warn" / "deny"
+# once all call sites have been cleaned up (tracked in CONTRIBUTING.md).
+unwrap_used = "allow"
+expect_used = "allow"
 
 [workspace.package]
 version = "0.1.0"

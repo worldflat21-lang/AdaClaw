@@ -64,9 +64,7 @@ fn base32_decode(input: &str) -> Option<Vec<u8>> {
         if ch_upper == '=' {
             continue;
         }
-        let val = BASE32_ALPHABET
-            .iter()
-            .position(|&x| x == ch_upper as u8)?;
+        let val = BASE32_ALPHABET.iter().position(|&x| x == ch_upper as u8)?;
         buffer = (buffer << 5) | val as u32;
         bits_left += 5;
         if bits_left >= 8 {
@@ -92,8 +90,9 @@ pub struct OtpProvider {
 impl OtpProvider {
     /// Create a provider from a base32-encoded secret string.
     pub fn from_base32(secret_b32: &str) -> Result<Self> {
-        let secret = base32_decode(secret_b32.trim())
-            .ok_or_else(|| anyhow::anyhow!("Invalid base32 secret: contains non-base32 characters"))?;
+        let secret = base32_decode(secret_b32.trim()).ok_or_else(|| {
+            anyhow::anyhow!("Invalid base32 secret: contains non-base32 characters")
+        })?;
         if secret.is_empty() {
             anyhow::bail!("OTP secret must not be empty");
         }
@@ -183,8 +182,8 @@ impl OtpProvider {
 
     /// Compute HOTP(secret, counter) → n-digit code.  (RFC 4226 §5)
     fn hotp(&self, counter: u64) -> u32 {
-        let mut mac = HmacSha1::new_from_slice(&self.secret)
-            .expect("HMAC-SHA1 accepts any key length");
+        let mut mac =
+            HmacSha1::new_from_slice(&self.secret).expect("HMAC-SHA1 accepts any key length");
         mac.update(&counter.to_be_bytes());
         let result = mac.finalize().into_bytes();
 
@@ -236,7 +235,9 @@ mod tests {
     fn test_hotp_rfc4226_vectors() {
         let p = rfc_provider();
         // RFC 4226 Appendix D test vectors
-        let expected = [755224u32, 287082, 359152, 969429, 338314, 254676, 287922, 162583, 399871, 520489];
+        let expected = [
+            755224u32, 287082, 359152, 969429, 338314, 254676, 287922, 162583, 399871, 520489,
+        ];
         for (counter, &expected_code) in expected.iter().enumerate() {
             assert_eq!(
                 p.hotp(counter as u64),
@@ -282,7 +283,7 @@ mod tests {
     #[test]
     fn test_verify_wrong_length() {
         let otp = OtpProvider::from_raw(RFC_SECRET.to_vec());
-        assert!(!otp.verify("12345"));   // too short
+        assert!(!otp.verify("12345")); // too short
         assert!(!otp.verify("1234567")); // too long
         assert!(!otp.verify("abc123")); // non-numeric
     }

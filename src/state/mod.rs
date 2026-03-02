@@ -103,10 +103,7 @@ impl StateManager {
 
     /// 获取最近活跃渠道名（如 `"telegram"`）。
     pub fn get_last_channel(&self) -> Option<String> {
-        self.state
-            .read()
-            .ok()
-            .and_then(|s| s.last_channel.clone())
+        self.state.read().ok().and_then(|s| s.last_channel.clone())
     }
 
     /// 获取最近活跃会话 ID（如 `"telegram:123456789"`）。
@@ -135,12 +132,11 @@ impl StateManager {
         // 先读取，避免在没有变化时做无意义的写入
         {
             let current = self.state.read().ok();
-            if let Some(s) = current {
-                if s.last_channel.as_deref() == Some(channel)
-                    && s.last_session_id.as_deref() == Some(session_id)
-                {
-                    return; // 无变化，跳过
-                }
+            if let Some(s) = current
+                && s.last_channel.as_deref() == Some(channel)
+                && s.last_session_id.as_deref() == Some(session_id)
+            {
+                return; // 无变化，跳过
             }
         }
 

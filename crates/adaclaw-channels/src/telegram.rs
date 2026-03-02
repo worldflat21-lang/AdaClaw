@@ -12,11 +12,11 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -209,7 +209,8 @@ impl TelegramChannel {
             ));
         }
 
-        tg.result.ok_or_else(|| anyhow!("Telegram API returned null result ({})", method))
+        tg.result
+            .ok_or_else(|| anyhow!("Telegram API returned null result ({})", method))
     }
 
     /// 获取机器人用户名（用于 mention-only 检测），带缓存
@@ -224,16 +225,15 @@ impl TelegramChannel {
         let url = self.api_url("getMe");
         match self.client.get(&url).send().await {
             Ok(resp) => {
-                if let Ok(tg) = resp.json::<TgResponse<TgBotInfo>>().await {
-                    if tg.ok {
-                        if let Some(info) = tg.result {
-                            let uname = info.username.clone();
-                            let mut cache = self.bot_username.lock().await;
-                            *cache = Some(uname.clone());
-                            debug!(channel = "telegram", username = %uname, "Bot username fetched");
-                            return Some(uname);
-                        }
-                    }
+                if let Ok(tg) = resp.json::<TgResponse<TgBotInfo>>().await
+                    && tg.ok
+                    && let Some(info) = tg.result
+                {
+                    let uname = info.username.clone();
+                    let mut cache = self.bot_username.lock().await;
+                    *cache = Some(uname.clone());
+                    debug!(channel = "telegram", username = %uname, "Bot username fetched");
+                    return Some(uname);
                 }
                 warn!(channel = "telegram", "Failed to parse getMe response");
                 None
@@ -281,22 +281,27 @@ impl TelegramChannel {
                         // 消费掉已有的 updates，防止重放
                         if let Some(results) = data.get("result").and_then(|r| r.as_array()) {
                             for update in results {
-                                if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64()) {
+                                if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64())
+                                {
                                     offset = uid + 1;
                                 }
                             }
                         }
-                        debug!(channel = "telegram", offset = offset, "Startup probe succeeded");
+                        debug!(
+                            channel = "telegram",
+                            offset = offset,
+                            "Startup probe succeeded"
+                        );
                         return offset;
                     }
 
-                    let error_code = data
-                        .get("error_code")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
+                    let error_code = data.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0);
 
                     if error_code == 409 {
-                        debug!(channel = "telegram", "Startup probe: 409 conflict (previous instance still running), retrying in 5s");
+                        debug!(
+                            channel = "telegram",
+                            "Startup probe: 409 conflict (previous instance still running), retrying in 5s"
+                        );
                     } else {
                         let desc = data
                             .get("description")
@@ -373,7 +378,10 @@ impl TelegramChannel {
             .await;
 
         if let Err(e) = result {
-            warn!("editMessageText failed ({}), falling back to sendMessage", e);
+            warn!(
+                "editMessageText failed ({}), falling back to sendMessage",
+                e
+            );
             if let Err(e2) = self.send_message(chat_id, text, false).await {
                 error!("fallback sendMessage also failed: {}", e2);
             }
@@ -443,9 +451,8 @@ impl TelegramChannel {
     /// 例如："hi @MyBot status" → "hi status"（不留双空格）
     fn strip_bot_mention(text: &str, bot_username: &str) -> String {
         let mention = format!("@{}", bot_username);
-        let re = Regex::new(&format!("(?i){}\\b", regex::escape(&mention))).unwrap_or_else(|_| {
-            Regex::new("NOMATCH_IMPOSSIBLE").unwrap()
-        });
+        let re = Regex::new(&format!("(?i){}\\b", regex::escape(&mention)))
+            .unwrap_or_else(|_| Regex::new("NOMATCH_IMPOSSIBLE").unwrap());
         let stripped = re.replace_all(text, "");
         // Collapse sequences of spaces introduced by removing the mention.
         // We only collapse horizontal spaces (not newlines) to preserve formatting.
@@ -502,7 +509,8 @@ impl TelegramChannel {
             }
         });
 
-        self.call_api::<TgSentMessage>("sendMessage", params).await?;
+        self.call_api::<TgSentMessage>("sendMessage", params)
+            .await?;
         Ok(())
     }
 
@@ -522,26 +530,22 @@ impl TelegramChannel {
         };
 
         // Parse approval callback data
-        let (command, request_id) = if let Some(rid) = data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX) {
+        let (command, request_id) = if let Some(rid) =
+            data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+        {
             let rid = rid.trim();
             if rid.is_empty() {
                 self.answer_callback_query_nonblocking(callback.id.clone(), "⚠️ Invalid request");
                 return;
             }
-            (
-                format!("/approve-allow {}", rid),
-                rid.to_string(),
-            )
+            (format!("/approve-allow {}", rid), rid.to_string())
         } else if let Some(rid) = data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX) {
             let rid = rid.trim();
             if rid.is_empty() {
                 self.answer_callback_query_nonblocking(callback.id.clone(), "⚠️ Invalid request");
                 return;
             }
-            (
-                format!("/approve-deny {}", rid),
-                rid.to_string(),
-            )
+            (format!("/approve-deny {}", rid), rid.to_string())
         } else {
             // Unknown callback — just acknowledge
             self.answer_callback_query_nonblocking(callback.id.clone(), "");
@@ -605,7 +609,14 @@ impl TelegramChannel {
 
         // Inject the approval command into the bus as a regular inbound message
         self.base
-            .handle_message(bus, &sender_id, &sender_name, &chat_id_str, &command, metadata)
+            .handle_message(
+                bus,
+                &sender_id,
+                &sender_name,
+                &chat_id_str,
+                &command,
+                metadata,
+            )
             .await;
     }
 
@@ -711,9 +722,7 @@ impl TelegramChannel {
 
         // ── 群组 mention-only 过滤 ────────────────────────────────────────────
         if is_group && self.mention_only {
-            let text_to_check = msg.text.as_deref()
-                .or(msg.caption.as_deref())
-                .unwrap_or("");
+            let text_to_check = msg.text.as_deref().or(msg.caption.as_deref()).unwrap_or("");
 
             let bot_uname = self.bot_username.lock().await.clone();
             match bot_uname {
@@ -729,7 +738,10 @@ impl TelegramChannel {
                 }
                 None => {
                     // 未获取到用户名，跳过（保守策略）
-                    debug!(channel = "telegram", "Bot username not available, skipping group message");
+                    debug!(
+                        channel = "telegram",
+                        "Bot username not available, skipping group message"
+                    );
                     return;
                 }
             }
@@ -752,14 +764,14 @@ impl TelegramChannel {
 
         // ── 处理媒体附件 ──────────────────────────────────────────────────────
         let mut metadata_extra: HashMap<String, Value> = HashMap::new();
-        if let Some(photos) = &msg.photo {
-            if let Some(largest) = photos.last() {
-                content_parts.push("[image]".to_string());
-                metadata_extra.insert(
-                    "photo_file_id".to_string(),
-                    Value::String(largest.file_id.clone()),
-                );
-            }
+        if let Some(photos) = &msg.photo
+            && let Some(largest) = photos.last()
+        {
+            content_parts.push("[image]".to_string());
+            metadata_extra.insert(
+                "photo_file_id".to_string(),
+                Value::String(largest.file_id.clone()),
+            );
         }
         if let Some(voice) = &msg.voice {
             content_parts.push("[voice]".to_string());
@@ -812,9 +824,15 @@ impl TelegramChannel {
 
         // ── 构建 metadata ─────────────────────────────────────────────────────
         let mut metadata: HashMap<String, Value> = HashMap::new();
-        metadata.insert("message_id".to_string(), Value::String(msg.message_id.to_string()));
+        metadata.insert(
+            "message_id".to_string(),
+            Value::String(msg.message_id.to_string()),
+        );
         metadata.insert("user_id".to_string(), Value::String(user.id.to_string()));
-        metadata.insert("first_name".to_string(), Value::String(user.first_name.clone()));
+        metadata.insert(
+            "first_name".to_string(),
+            Value::String(user.first_name.clone()),
+        );
         metadata.insert("is_group".to_string(), Value::Bool(is_group));
         for (k, v) in metadata_extra {
             metadata.insert(k, v);
@@ -822,7 +840,14 @@ impl TelegramChannel {
 
         // ── 上报到 Bus ────────────────────────────────────────────────────────
         self.base
-            .handle_message(bus, &sender_id, &sender_name, &chat_id_str, &content, metadata)
+            .handle_message(
+                bus,
+                &sender_id,
+                &sender_name,
+                &chat_id_str,
+                &content,
+                metadata,
+            )
             .await;
     }
 
@@ -908,14 +933,24 @@ impl Channel for TelegramChannel {
             if let Some(uname) = self.get_bot_username().await {
                 info!(channel = "telegram", username = %uname, "mention_only mode enabled");
             } else {
-                warn!(channel = "telegram", "mention_only=true but failed to fetch bot username; group messages will be skipped");
+                warn!(
+                    channel = "telegram",
+                    "mention_only=true but failed to fetch bot username; group messages will be skipped"
+                );
             }
         }
 
         // 启动探针：等待 getUpdates slot 可用（避免 409 Conflict）
-        info!(channel = "telegram", "Running startup probe (detecting 409 conflicts)...");
+        info!(
+            channel = "telegram",
+            "Running startup probe (detecting 409 conflicts)..."
+        );
         let mut offset = self.startup_probe().await;
-        info!(channel = "telegram", offset = offset, "Startup probe done, entering long-poll loop");
+        info!(
+            channel = "telegram",
+            offset = offset,
+            "Startup probe done, entering long-poll loop"
+        );
 
         let mut consecutive_errors: u32 = 0;
 
@@ -964,9 +999,10 @@ impl Channel for TelegramChannel {
             return Err(anyhow!("Telegram channel is not running"));
         }
 
-        let chat_id: i64 = msg.target_session_id.parse().map_err(|_| {
-            anyhow!("Invalid Telegram chat_id: '{}'", msg.target_session_id)
-        })?;
+        let chat_id: i64 = msg
+            .target_session_id
+            .parse()
+            .map_err(|_| anyhow!("Invalid Telegram chat_id: '{}'", msg.target_session_id))?;
         let chat_id_str = msg.target_session_id.clone();
 
         let content = match &msg.content {
@@ -1004,9 +1040,12 @@ impl Channel for TelegramChannel {
         tool_name: &str,
         args_preview: &str,
     ) -> Result<()> {
-        let chat_id: i64 = session_id
-            .parse()
-            .map_err(|_| anyhow!("Invalid Telegram chat_id for approval prompt: '{}'", session_id))?;
+        let chat_id: i64 = session_id.parse().map_err(|_| {
+            anyhow!(
+                "Invalid Telegram chat_id for approval prompt: '{}'",
+                session_id
+            )
+        })?;
         self.send_approval_prompt_msg(chat_id, request_id, tool_name, args_preview)
             .await
     }
@@ -1263,17 +1302,26 @@ mod tests {
 
     #[test]
     fn test_allowlist_compound() {
-        let ch = TelegramChannel::new("token".to_string())
-            .with_allow_from(vec!["123456".to_string()]);
+        let ch =
+            TelegramChannel::new("token".to_string()).with_allow_from(vec!["123456".to_string()]);
         assert!(ch.base.is_allowed("123456|alice"));
         assert!(!ch.base.is_allowed("999|alice"));
     }
 
     #[test]
     fn test_contains_bot_mention() {
-        assert!(TelegramChannel::contains_bot_mention("hi @MyBot please help", "mybot"));
-        assert!(TelegramChannel::contains_bot_mention("@mybot do this", "mybot"));
-        assert!(!TelegramChannel::contains_bot_mention("hello world", "mybot"));
+        assert!(TelegramChannel::contains_bot_mention(
+            "hi @MyBot please help",
+            "mybot"
+        ));
+        assert!(TelegramChannel::contains_bot_mention(
+            "@mybot do this",
+            "mybot"
+        ));
+        assert!(!TelegramChannel::contains_bot_mention(
+            "hello world",
+            "mybot"
+        ));
         assert!(!TelegramChannel::contains_bot_mention("@otherbot", "mybot"));
     }
 
@@ -1304,7 +1352,10 @@ mod tests {
     #[test]
     fn test_approval_callback_approve_prefix_parses_request_id() {
         let data = format!("{}apr-1a2b3c", APPROVAL_CALLBACK_APPROVE_PREFIX);
-        assert!(data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).is_some());
+        assert!(
+            data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+                .is_some()
+        );
         let rid = data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).unwrap();
         assert_eq!(rid, "apr-1a2b3c");
     }
@@ -1331,30 +1382,54 @@ mod tests {
         let approve_data = format!("{}apr-aaa", APPROVAL_CALLBACK_APPROVE_PREFIX);
         let deny_data = format!("{}apr-aaa", APPROVAL_CALLBACK_DENY_PREFIX);
 
-        assert!(approve_data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).is_some());
-        assert!(approve_data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX).is_none());
+        assert!(
+            approve_data
+                .strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+                .is_some()
+        );
+        assert!(
+            approve_data
+                .strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX)
+                .is_none()
+        );
 
-        assert!(deny_data.strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX).is_some());
-        assert!(deny_data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX).is_none());
+        assert!(
+            deny_data
+                .strip_prefix(APPROVAL_CALLBACK_DENY_PREFIX)
+                .is_some()
+        );
+        assert!(
+            deny_data
+                .strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+                .is_none()
+        );
     }
 
     #[test]
     fn test_approval_callback_empty_request_id_rejected() {
         // Empty request_id after prefix — should NOT be treated as valid
-        let approve_data = APPROVAL_CALLBACK_APPROVE_PREFIX;  // no request_id
-        let rid = approve_data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+        let approve_data = APPROVAL_CALLBACK_APPROVE_PREFIX; // no request_id
+        let rid = approve_data
+            .strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
             .unwrap_or("")
             .trim();
-        assert!(rid.is_empty(), "Empty request_id should be treated as invalid");
+        assert!(
+            rid.is_empty(),
+            "Empty request_id should be treated as invalid"
+        );
     }
 
     #[test]
     fn test_approval_callback_whitespace_trimmed_request_id_rejected() {
         let data = format!("{}   ", APPROVAL_CALLBACK_APPROVE_PREFIX);
-        let rid = data.strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
+        let rid = data
+            .strip_prefix(APPROVAL_CALLBACK_APPROVE_PREFIX)
             .unwrap_or("")
             .trim();
-        assert!(rid.is_empty(), "Whitespace-only request_id should be treated as invalid");
+        assert!(
+            rid.is_empty(),
+            "Whitespace-only request_id should be treated as invalid"
+        );
     }
 
     #[test]
@@ -1377,7 +1452,7 @@ mod tests {
     #[test]
     fn test_approval_prompt_callback_data_max_length() {
         // Telegram callback_data is limited to 64 bytes
-        let request_id = "apr-12345";  // 9 chars
+        let request_id = "apr-12345"; // 9 chars
         let approve_data = format!("{}{}", APPROVAL_CALLBACK_APPROVE_PREFIX, request_id);
         assert!(
             approve_data.len() <= 64,

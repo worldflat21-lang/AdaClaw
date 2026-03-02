@@ -3,8 +3,8 @@
 //! Checks every subsystem and reports status as ✅ / ⚠️ / ❌.
 
 use crate::config::Config;
-use adaclaw_security::sandbox::docker::ContainerEnvironment;
 use adaclaw_security::approval::AutonomyLevel;
+use adaclaw_security::sandbox::docker::ContainerEnvironment;
 
 /// Run all diagnostic checks and print a structured report.
 pub async fn run_doctor() {
@@ -49,15 +49,14 @@ pub async fn run_doctor() {
                 checks_passed += 1;
             } else {
                 // Check env vars as fallback
-                let env_key = format!(
-                    "ADACLAW_{}_API_KEY",
-                    name.to_uppercase().replace('-', "_")
-                );
+                let env_key = format!("ADACLAW_{}_API_KEY", name.to_uppercase().replace('-', "_"));
                 if std::env::var(&env_key).is_ok() {
                     ok(&format!("Provider '{name}' — key via env var {env_key}"));
                     checks_passed += 1;
                 } else {
-                    warn(&format!("Provider '{name}' has no API key (set {env_key} or api_key in config)"));
+                    warn(&format!(
+                        "Provider '{name}' has no API key (set {env_key} or api_key in config)"
+                    ));
                     checks_warned += 1;
                 }
             }
@@ -95,7 +94,10 @@ pub async fn run_doctor() {
     match cfg.memory.backend.as_str() {
         "sqlite" => {
             if mem_path.exists() {
-                ok(&format!("Memory: SQLite database exists at '{}'", cfg.memory.path));
+                ok(&format!(
+                    "Memory: SQLite database exists at '{}'",
+                    cfg.memory.path
+                ));
                 checks_passed += 1;
             } else {
                 info(&format!(
@@ -114,8 +116,7 @@ pub async fn run_doctor() {
                     checks_passed += 1;
                 }
                 "openai" => {
-                    if cfg.memory.embed_api_key.is_some()
-                        || std::env::var("OPENAI_API_KEY").is_ok()
+                    if cfg.memory.embed_api_key.is_some() || std::env::var("OPENAI_API_KEY").is_ok()
                     {
                         ok("Memory: OpenAI embedding provider configured with API key");
                         checks_passed += 1;
@@ -132,9 +133,15 @@ pub async fn run_doctor() {
         }
         "markdown" => {
             if mem_path.exists() {
-                ok(&format!("Memory: Markdown directory exists at '{}'", cfg.memory.path));
+                ok(&format!(
+                    "Memory: Markdown directory exists at '{}'",
+                    cfg.memory.path
+                ));
             } else {
-                info(&format!("Memory: Markdown directory will be created at '{}'", cfg.memory.path));
+                info(&format!(
+                    "Memory: Markdown directory will be created at '{}'",
+                    cfg.memory.path
+                ));
             }
             checks_passed += 1;
         }
@@ -223,7 +230,10 @@ pub async fn run_doctor() {
     }
 
     // ── Security ──────────────────────────────────────────────────────────────
-    let autonomy_level = cfg.security.autonomy_level.parse::<AutonomyLevel>()
+    let autonomy_level = cfg
+        .security
+        .autonomy_level
+        .parse::<AutonomyLevel>()
         .unwrap_or(AutonomyLevel::Supervised);
     if !cfg.security.allow_full_outside_container {
         if let Some(warning) = ContainerEnvironment::check_autonomy_safety(&autonomy_level) {
@@ -290,24 +300,30 @@ pub async fn run_doctor() {
     }
 
     // ── Skills ────────────────────────────────────────────────────────────────
-    let workspace_dir = cfg
-        .security
-        .workspace
-        .as_deref()
-        .unwrap_or("./workspace");
+    let workspace_dir = cfg.security.workspace.as_deref().unwrap_or("./workspace");
     let skills_dir = std::path::Path::new(workspace_dir).join("skills");
     if skills_dir.exists() {
         let skill_count = std::fs::read_dir(&skills_dir)
             .map(|entries| entries.flatten().filter(|e| e.path().is_dir()).count())
             .unwrap_or(0);
         if skill_count > 0 {
-            ok(&format!("Skills: {} skill(s) found in '{}'", skill_count, skills_dir.display()));
+            ok(&format!(
+                "Skills: {} skill(s) found in '{}'",
+                skill_count,
+                skills_dir.display()
+            ));
             checks_passed += 1;
         } else {
-            info(&format!("Skills: directory exists but no skills installed at '{}'", skills_dir.display()));
+            info(&format!(
+                "Skills: directory exists but no skills installed at '{}'",
+                skills_dir.display()
+            ));
         }
     } else {
-        info(&format!("Skills: directory '{}' not found (create it to add skills)", skills_dir.display()));
+        info(&format!(
+            "Skills: directory '{}' not found (create it to add skills)",
+            skills_dir.display()
+        ));
     }
 
     // ── Tunnel ────────────────────────────────────────────────────────────────
@@ -344,16 +360,22 @@ pub async fn run_doctor() {
     }
 
     // ── Binary size estimate (informational) ──────────────────────────────────
-    if let Ok(exe) = std::env::current_exe() {
-        if let Ok(meta) = std::fs::metadata(&exe) {
-            let size_mb = meta.len() as f64 / 1_048_576.0;
-            if size_mb < 10.0 {
-                ok(&format!("Binary size: {:.1} MB (target: <10 MB ✓)", size_mb));
-                checks_passed += 1;
-            } else {
-                warn(&format!("Binary size: {:.1} MB (target: <10 MB — use --release build)", size_mb));
-                checks_warned += 1;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Ok(meta) = std::fs::metadata(&exe)
+    {
+        let size_mb = meta.len() as f64 / 1_048_576.0;
+        if size_mb < 10.0 {
+            ok(&format!(
+                "Binary size: {:.1} MB (target: <10 MB ✓)",
+                size_mb
+            ));
+            checks_passed += 1;
+        } else {
+            warn(&format!(
+                "Binary size: {:.1} MB (target: <10 MB — use --release build)",
+                size_mb
+            ));
+            checks_warned += 1;
         }
     }
 

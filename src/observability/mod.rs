@@ -44,10 +44,7 @@ pub enum ObserverEvent {
         success: bool,
     },
     /// LLM provider request started.
-    LlmRequest {
-        provider: String,
-        model: String,
-    },
+    LlmRequest { provider: String, model: String },
     /// LLM provider response received.
     LlmResponse {
         provider: String,
@@ -72,10 +69,7 @@ pub enum ObserverEvent {
     /// Daemon heartbeat tick.
     HeartbeatTick,
     /// Error in a named component.
-    Error {
-        component: String,
-        message: String,
-    },
+    Error { component: String, message: String },
 }
 
 /// Core observability trait.

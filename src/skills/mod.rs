@@ -17,4 +17,4 @@
 
 pub mod loader;
 
-pub use loader::{load_skills, skills_to_prompt, Skill};
+pub use loader::{Skill, load_skills, skills_to_prompt};

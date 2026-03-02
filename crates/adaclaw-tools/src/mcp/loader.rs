@@ -5,7 +5,7 @@
 //! 2. 握手并获取工具清单
 //! 3. 将所有 `McpTool` 注册到调用者提供的 Vec<Box<dyn Tool>>
 
-use super::{http::HttpMcpClient, stdio::StdioMcpClient, McpTool, McpTransport};
+use super::{McpTool, McpTransport, http::HttpMcpClient, stdio::StdioMcpClient};
 use adaclaw_core::tool::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -92,9 +92,7 @@ impl McpLoader {
     }
 
     /// 加载所有配置中的 MCP Server，返回包装为 `Box<dyn Tool>` 的工具列表
-    pub async fn load_all(
-        mcp_servers: &HashMap<String, McpServerConfig>,
-    ) -> Vec<Box<dyn Tool>> {
+    pub async fn load_all(mcp_servers: &HashMap<String, McpServerConfig>) -> Vec<Box<dyn Tool>> {
         Self::load_all_clonable(mcp_servers)
             .await
             .into_iter()
@@ -115,16 +113,13 @@ impl McpLoader {
                 tool_timeout,
             } => {
                 let timeout = tool_timeout.unwrap_or(30);
-                let (transport, tool_descs) = StdioMcpClient::connect(
-                    server_name,
-                    command,
-                    args.clone(),
-                    env.clone(),
-                )
-                .await?;
+                let (transport, tool_descs) =
+                    StdioMcpClient::connect(server_name, command, args.clone(), env.clone())
+                        .await?;
 
                 let transport_arc: Arc<dyn McpTransport> = transport;
-                let tools = Self::build_clonable_tools(server_name, tool_descs, transport_arc, timeout);
+                let tools =
+                    Self::build_clonable_tools(server_name, tool_descs, transport_arc, timeout);
                 Ok(tools)
             }
 
@@ -134,16 +129,13 @@ impl McpLoader {
                 tool_timeout,
             } => {
                 let timeout = tool_timeout.unwrap_or(30);
-                let (transport, tool_descs) = HttpMcpClient::connect(
-                    server_name,
-                    url,
-                    headers.clone(),
-                    Some(timeout),
-                )
-                .await?;
+                let (transport, tool_descs) =
+                    HttpMcpClient::connect(server_name, url, headers.clone(), Some(timeout))
+                        .await?;
 
                 let transport_arc: Arc<dyn McpTransport> = transport;
-                let tools = Self::build_clonable_tools(server_name, tool_descs, transport_arc, timeout);
+                let tools =
+                    Self::build_clonable_tools(server_name, tool_descs, transport_arc, timeout);
                 Ok(tools)
             }
         }
@@ -212,7 +204,10 @@ tool_timeout = 60
 "#;
         let cfg: McpServerConfig = toml::from_str(toml).unwrap();
         assert!(matches!(cfg, McpServerConfig::Http { .. }));
-        if let McpServerConfig::Http { url, tool_timeout, .. } = cfg {
+        if let McpServerConfig::Http {
+            url, tool_timeout, ..
+        } = cfg
+        {
             assert_eq!(url, "https://example.com/mcp/");
             assert_eq!(tool_timeout, Some(60));
         }

@@ -30,13 +30,13 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     routing::get,
-    Router,
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -170,12 +170,7 @@ impl WeComState {
         if self.token.is_empty() {
             return true; // 未配置 token，跳过验证
         }
-        let mut params = [
-            self.token.as_str(),
-            timestamp,
-            nonce,
-            msg_encrypt,
-        ];
+        let mut params = [self.token.as_str(), timestamp, nonce, msg_encrypt];
         params.sort_unstable();
         let joined = params.join("");
         let mut hasher = Sha1::new();
@@ -203,10 +198,7 @@ impl WeComState {
             .map_err(|e| anyhow!("Failed to decode AES key: {}", e))?;
 
         if aes_key.len() != 32 {
-            return Err(anyhow!(
-                "AES key must be 32 bytes, got {}",
-                aes_key.len()
-            ));
+            return Err(anyhow!("AES key must be 32 bytes, got {}", aes_key.len()));
         }
 
         let iv = &aes_key[..16];
@@ -254,8 +246,7 @@ impl WeComState {
         if data.len() < 20 {
             return Err(anyhow!("Decrypted data too short: {} bytes", data.len()));
         }
-        let msg_len =
-            u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
+        let msg_len = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
         if data.len() < 20 + msg_len {
             return Err(anyhow!(
                 "Invalid message length: {} > available {}",
@@ -263,9 +254,8 @@ impl WeComState {
                 data.len() - 20
             ));
         }
-        let msg =
-            String::from_utf8(data[20..20 + msg_len].to_vec())
-                .map_err(|e| anyhow!("Invalid UTF-8 in decrypted message: {}", e))?;
+        let msg = String::from_utf8(data[20..20 + msg_len].to_vec())
+            .map_err(|e| anyhow!("Invalid UTF-8 in decrypted message: {}", e))?;
 
         Ok(msg)
     }
@@ -368,7 +358,9 @@ impl Channel for WeComChannel {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
-            .with_graceful_shutdown(async { rx.await.ok(); })
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            })
             .await
             .map_err(|e| anyhow!("WeCom HTTP server error: {}", e))?;
 
@@ -407,11 +399,7 @@ impl Channel for WeComChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "WeCom reply failed: HTTP {} — {}",
-                status,
-                body
-            ));
+            return Err(anyhow!("WeCom reply failed: HTTP {} — {}", status, body));
         }
 
         debug!(channel = "wechat_work", "Reply sent successfully");
@@ -440,7 +428,10 @@ async fn handle_wecom_verify(
         &params.nonce,
         &params.echostr,
     ) {
-        warn!(channel = "wechat_work", "Signature verification failed on URL verify");
+        warn!(
+            channel = "wechat_work",
+            "Signature verification failed on URL verify"
+        );
         return (StatusCode::FORBIDDEN, String::new());
     }
 
@@ -448,10 +439,7 @@ async fn handle_wecom_verify(
     match state.decrypt_message(&params.echostr) {
         Ok(plain) => {
             // 按企业微信文档：去掉 BOM 和前后空白
-            let plain = plain
-                .trim()
-                .trim_start_matches('\u{FEFF}')
-                .to_string();
+            let plain = plain.trim().trim_start_matches('\u{FEFF}').to_string();
             (StatusCode::OK, plain)
         }
         Err(e) => {
@@ -483,7 +471,10 @@ async fn handle_wecom_message(
         &params.nonce,
         &encrypted.encrypt,
     ) {
-        warn!(channel = "wechat_work", "Signature verification failed on message");
+        warn!(
+            channel = "wechat_work",
+            "Signature verification failed on message"
+        );
         return StatusCode::FORBIDDEN;
     }
 
@@ -564,7 +555,10 @@ async fn process_wecom_message(state: WeComState, msg: WeComMessage) {
     metadata.insert("msg_id".to_string(), Value::String(msg.msgid.clone()));
     metadata.insert("msg_type".to_string(), Value::String(msg.msgtype.clone()));
     metadata.insert("chat_type".to_string(), Value::String(msg.chattype.clone()));
-    metadata.insert("response_url".to_string(), Value::String(msg.response_url.clone()));
+    metadata.insert(
+        "response_url".to_string(),
+        Value::String(msg.response_url.clone()),
+    );
     if !msg.chatid.is_empty() {
         metadata.insert("chat_id".to_string(), Value::String(msg.chatid.clone()));
     }
@@ -578,7 +572,14 @@ async fn process_wecom_message(state: WeComState, msg: WeComMessage) {
 
     state
         .base
-        .handle_message(&state.bus, &sender_id, &sender_id, &session_id, &content, metadata)
+        .handle_message(
+            &state.bus,
+            &sender_id,
+            &sender_id,
+            &session_id,
+            &content,
+            metadata,
+        )
         .await;
 }
 
@@ -586,8 +587,8 @@ async fn process_wecom_message(state: WeComState, msg: WeComMessage) {
 
 fn quick_xml_parse(xml: &str) -> Result<WeComEncryptXml> {
     // <xml><Encrypt>...</Encrypt>...</xml>
-    let encrypt = extract_xml_tag(xml, "Encrypt")
-        .ok_or_else(|| anyhow!("Missing <Encrypt> tag in XML"))?;
+    let encrypt =
+        extract_xml_tag(xml, "Encrypt").ok_or_else(|| anyhow!("Missing <Encrypt> tag in XML"))?;
     Ok(WeComEncryptXml { encrypt })
 }
 

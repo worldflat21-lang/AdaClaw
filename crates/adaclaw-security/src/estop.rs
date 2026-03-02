@@ -122,10 +122,7 @@ impl EstopController {
 
     /// Returns `true` if `KillAll` is active (all agents stopped).
     pub fn is_killed(&self) -> bool {
-        matches!(
-            self.state.read().unwrap().level,
-            Some(EstopLevel::KillAll)
-        )
+        matches!(self.state.read().unwrap().level, Some(EstopLevel::KillAll))
     }
 
     /// Returns `true` if network is killed (`NetworkKill` or `KillAll`).
@@ -154,9 +151,9 @@ impl EstopController {
     pub fn is_domain_blocked(&self, domain: &str) -> bool {
         let s = self.state.read().unwrap();
         match &s.level {
-            Some(EstopLevel::DomainBlock(domains)) => {
-                domains.iter().any(|d| domain == d.as_str() || domain.ends_with(&format!(".{}", d)))
-            }
+            Some(EstopLevel::DomainBlock(domains)) => domains
+                .iter()
+                .any(|d| domain == d.as_str() || domain.ends_with(&format!(".{}", d))),
             Some(EstopLevel::NetworkKill) | Some(EstopLevel::KillAll) => true,
             _ => false,
         }
@@ -175,7 +172,12 @@ impl EstopController {
     /// - Persists state to disk.
     /// - Broadcasts the level to all subscribers.
     /// - If `require_otp` is `true`, OTP must be verified to call `clear()`.
-    pub fn engage(&self, level: EstopLevel, reason: Option<String>, require_otp: bool) -> Result<()> {
+    pub fn engage(
+        &self,
+        level: EstopLevel,
+        reason: Option<String>,
+        require_otp: bool,
+    ) -> Result<()> {
         info!(
             level = %level,
             reason = ?reason,
@@ -238,18 +240,20 @@ impl EstopController {
     // ── Persistence ───────────────────────────────────────────────────────────
 
     fn persist(&self) -> Result<()> {
-        if let Some(parent) = self.state_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = self.state_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let s = self.state.read().unwrap();
         let json = serde_json::to_string_pretty(&*s)?;
-        std::fs::write(&self.state_path, json)
-            .map_err(|e| {
-                error!("Failed to persist estop state to {:?}: {}", self.state_path, e);
-                e
-            })?;
+        std::fs::write(&self.state_path, json).map_err(|e| {
+            error!(
+                "Failed to persist estop state to {:?}: {}",
+                self.state_path, e
+            );
+            e
+        })?;
         Ok(())
     }
 }
@@ -294,7 +298,8 @@ mod tests {
     #[test]
     fn test_engage_kill_all() {
         let (ctrl, _dir) = tmp_ctrl();
-        ctrl.engage(EstopLevel::KillAll, Some("test".to_string()), false).unwrap();
+        ctrl.engage(EstopLevel::KillAll, Some("test".to_string()), false)
+            .unwrap();
         assert!(ctrl.is_active());
         assert!(ctrl.is_killed());
         assert!(ctrl.is_tool_frozen());
@@ -349,7 +354,8 @@ mod tests {
     #[test]
     fn test_clear_requires_otp() {
         let (ctrl, _dir) = tmp_ctrl();
-        ctrl.engage(EstopLevel::KillAll, Some("critical event".into()), true).unwrap();
+        ctrl.engage(EstopLevel::KillAll, Some("critical event".into()), true)
+            .unwrap();
         assert!(ctrl.clear(false).is_err(), "should require OTP");
         ctrl.clear(true).unwrap();
         assert!(!ctrl.is_active());
@@ -362,7 +368,8 @@ mod tests {
 
         {
             let ctrl = EstopController::new(&path);
-            ctrl.engage(EstopLevel::NetworkKill, Some("test persist".into()), false).unwrap();
+            ctrl.engage(EstopLevel::NetworkKill, Some("test persist".into()), false)
+                .unwrap();
         }
 
         // New controller instance loading the same file

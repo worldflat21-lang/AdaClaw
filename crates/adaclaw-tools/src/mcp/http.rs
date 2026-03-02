@@ -4,18 +4,21 @@
 //! 支持自定义 headers（Authorization 等），可配置超时。
 
 use super::{
-    extract_tool_output, JsonRpcRequest, JsonRpcResponse, McpToolDescription, McpTransport,
-    MCP_PROTOCOL_VERSION,
+    JsonRpcRequest, JsonRpcResponse, MCP_PROTOCOL_VERSION, McpToolDescription, McpTransport,
+    extract_tool_output,
 };
 use adaclaw_core::tool::ToolResult;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use reqwest::{Client, header::{HeaderMap, HeaderName, HeaderValue}};
+use reqwest::{
+    Client,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use tracing::debug;
 
 // ── HttpMcpClient ─────────────────────────────────────────────────────────────
@@ -46,10 +49,7 @@ impl HttpMcpClient {
         let mut header_map = HeaderMap::new();
         if let Some(headers) = headers {
             for (k, v) in headers {
-                if let (Ok(name), Ok(val)) = (
-                    HeaderName::from_str(&k),
-                    HeaderValue::from_str(&v),
-                ) {
+                if let (Ok(name), Ok(val)) = (HeaderName::from_str(&k), HeaderValue::from_str(&v)) {
                     header_map.insert(name, val);
                 }
             }
@@ -108,10 +108,12 @@ impl HttpMcpClient {
             ));
         }
 
-        let rpc_resp: JsonRpcResponse = resp
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse JSON-RPC response from '{}'", self.server_name))?;
+        let rpc_resp: JsonRpcResponse = resp.json().await.with_context(|| {
+            format!(
+                "Failed to parse JSON-RPC response from '{}'",
+                self.server_name
+            )
+        })?;
 
         if let Some(err) = rpc_resp.error {
             return Err(anyhow!(

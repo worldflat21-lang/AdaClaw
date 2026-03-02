@@ -42,7 +42,7 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,10 +88,7 @@ impl EmailChannel {
     ///
     /// # 安全
     /// 必须显式设置 `extra.consent_granted = "true"`，否则返回错误。
-    pub fn from_extra(
-        allow_from: Vec<String>,
-        extra: &HashMap<String, String>,
-    ) -> Result<Self> {
+    pub fn from_extra(allow_from: Vec<String>, extra: &HashMap<String, String>) -> Result<Self> {
         // ── 安全门控 ──────────────────────────────────────────────────
         let consent = extra
             .get("consent_granted")
@@ -259,14 +256,10 @@ pub struct EmailMessage {
 fn parse_email_message(raw: &[u8]) -> Result<EmailMessage> {
     use mailparse::MailHeaderMap;
 
-    let parsed = mailparse::parse_mail(raw)
-        .map_err(|e| anyhow!("mailparse error: {}", e))?;
+    let parsed = mailparse::parse_mail(raw).map_err(|e| anyhow!("mailparse error: {}", e))?;
 
     // 提取 From 头
-    let from_header = parsed
-        .headers
-        .get_first_value("From")
-        .unwrap_or_default();
+    let from_header = parsed.headers.get_first_value("From").unwrap_or_default();
     let (from_name, from_addr) = parse_from_header(&from_header);
 
     // 提取 Subject
@@ -296,12 +289,12 @@ fn parse_email_message(raw: &[u8]) -> Result<EmailMessage> {
 /// 解析 "Name <addr>" 格式的 From 头
 fn parse_from_header(header: &str) -> (String, String) {
     let header = header.trim();
-    if let Some(start) = header.find('<') {
-        if let Some(end) = header.find('>') {
-            let name = header[..start].trim().trim_matches('"').to_string();
-            let addr = header[start + 1..end].trim().to_string();
-            return (name, addr);
-        }
+    if let Some(start) = header.find('<')
+        && let Some(end) = header.find('>')
+    {
+        let name = header[..start].trim().trim_matches('"').to_string();
+        let addr = header[start + 1..end].trim().to_string();
+        return (name, addr);
     }
     // 没有 <> 格式，整个就是地址
     (String::new(), header.to_string())
@@ -457,8 +450,7 @@ impl Channel for EmailChannel {
         let (tx, mut rx) = oneshot::channel::<()>();
         *self.shutdown_tx.lock().await = Some(tx);
 
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(self.poll_interval_secs));
+        let mut interval = tokio::time::interval(Duration::from_secs(self.poll_interval_secs));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // 克隆所需字段（供 spawn_blocking 使用）
@@ -561,7 +553,10 @@ impl Channel for EmailChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         if !self.auto_reply_enabled {
-            debug!(channel = "email", "auto_reply_enabled = false, skipping send");
+            debug!(
+                channel = "email",
+                "auto_reply_enabled = false, skipping send"
+            );
             return Ok(());
         }
 

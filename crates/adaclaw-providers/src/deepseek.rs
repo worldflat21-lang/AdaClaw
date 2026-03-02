@@ -1,3 +1,4 @@
+use crate::registry::ProviderSpec;
 /// DeepSeek provider — OpenAI-compatible endpoint.
 ///
 /// DeepSeek exposes an OpenAI-compatible API at `https://api.deepseek.com/v1`.
@@ -7,10 +8,11 @@
 ///
 /// Because the API is fully OpenAI-compatible, this implementation is a thin
 /// wrapper that fixes the base URL and provider name.
-use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
-use anyhow::{anyhow, Result};
+use adaclaw_core::provider::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
+};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use crate::registry::ProviderSpec;
 use reqwest::Client;
 use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
@@ -28,7 +30,10 @@ impl DeepSeekProvider {
     pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
         Self {
             key: key.map(|s| Secret::new(s.to_string())),
-            base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
+            base_url: url
+                .unwrap_or(DEFAULT_BASE_URL)
+                .trim_end_matches('/')
+                .to_string(),
             client: Client::new(),
         }
     }
@@ -90,7 +95,10 @@ impl Provider for DeepSeekProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content, reasoning_content: None })
+        Ok(ChatResponse {
+            content,
+            reasoning_content: None,
+        })
     }
 
     async fn chat_with_system(

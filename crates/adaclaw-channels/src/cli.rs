@@ -70,14 +70,7 @@ impl Channel for CliChannel {
 
             let metadata: HashMap<String, Value> = HashMap::new();
             self.base
-                .handle_message(
-                    &bus,
-                    "local_user",
-                    "User",
-                    "cli:default",
-                    &text,
-                    metadata,
-                )
+                .handle_message(&bus, "local_user", "User", "cli:default", &text, metadata)
                 .await;
         }
 

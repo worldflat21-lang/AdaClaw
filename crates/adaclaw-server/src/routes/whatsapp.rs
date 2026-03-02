@@ -65,8 +65,7 @@ impl WhatsAppRouteState {
             return false;
         }
 
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC key any size");
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC key any size");
         mac.update(body.as_bytes());
         let expected = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
 
@@ -146,9 +145,7 @@ pub async fn whatsapp_receive(
         }
     };
 
-    if payload.get("object").and_then(|v| v.as_str())
-        != Some("whatsapp_business_account")
-    {
+    if payload.get("object").and_then(|v| v.as_str()) != Some("whatsapp_business_account") {
         return StatusCode::OK;
     }
 
@@ -173,11 +170,7 @@ pub async fn whatsapp_receive(
                 None => continue,
             };
 
-            if value
-                .get("messaging_product")
-                .and_then(|v| v.as_str())
-                != Some("whatsapp")
-            {
+            if value.get("messaging_product").and_then(|v| v.as_str()) != Some("whatsapp") {
                 continue;
             }
 
@@ -249,10 +242,7 @@ pub async fn whatsapp_receive(
                     reply_to: None,
                     metadata: {
                         let mut m = HashMap::new();
-                        m.insert(
-                            "message_id".to_string(),
-                            serde_json::Value::String(msg_id),
-                        );
+                        m.insert("message_id".to_string(), serde_json::Value::String(msg_id));
                         m
                     },
                 };

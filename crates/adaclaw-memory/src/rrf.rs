@@ -42,7 +42,11 @@ pub fn reciprocal_rank_fusion(
         .map(|(key, score)| RrfResult { key, score })
         .collect();
 
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results
 }
 

@@ -10,12 +10,12 @@
 //! - model: `whisper-large-v3`
 //! - 支持 voice/audio 文件字节（multipart/form-data）
 
+use crate::registry::ProviderSpec;
 use adaclaw_core::provider::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use crate::registry::ProviderSpec;
 use reqwest::Client;
 use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
@@ -54,7 +54,9 @@ impl GroqProvider {
     }
 
     fn auth_header(&self) -> Option<String> {
-        self.key.as_ref().map(|k| format!("Bearer {}", k.expose_secret()))
+        self.key
+            .as_ref()
+            .map(|k| format!("Bearer {}", k.expose_secret()))
     }
 }
 
@@ -104,7 +106,10 @@ impl Provider for GroqProvider {
             .to_string();
 
         debug!(model = %model, chars = content.len(), "Groq response");
-        Ok(ChatResponse { content, reasoning_content: None })
+        Ok(ChatResponse {
+            content,
+            reasoning_content: None,
+        })
     }
 
     async fn chat_with_system(
@@ -143,7 +148,10 @@ impl GroqWhisper {
     pub fn new(key: impl Into<String>, base_url: Option<&str>) -> Self {
         Self {
             key: Secret::new(key.into()),
-            base_url: base_url.unwrap_or(BASE_URL).trim_end_matches('/').to_string(),
+            base_url: base_url
+                .unwrap_or(BASE_URL)
+                .trim_end_matches('/')
+                .to_string(),
             client: Client::new(),
         }
     }
@@ -174,7 +182,10 @@ impl GroqWhisper {
         let resp = self
             .client
             .post(format!("{}/audio/transcriptions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.key.expose_secret()))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.key.expose_secret()),
+            )
             .multipart(form)
             .send()
             .await?;
@@ -186,11 +197,7 @@ impl GroqWhisper {
         }
 
         let data: Value = resp.json().await?;
-        let text = data["text"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let text = data["text"].as_str().unwrap_or("").trim().to_string();
 
         debug!(chars = text.len(), "Whisper transcription complete");
         Ok(text)

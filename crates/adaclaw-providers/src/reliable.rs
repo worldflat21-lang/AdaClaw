@@ -38,7 +38,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
-use crate::error::{classify_error, ProviderError, ProviderErrorKind};
+use crate::error::{ProviderError, ProviderErrorKind, classify_error};
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -119,8 +119,8 @@ impl CooldownTracker {
         }; // cooldowns 锁释放
 
         match elapsed_enough {
-            None => false,        // 未在冷却期
-            Some(false) => true,  // 仍在冷却期
+            None => false,       // 未在冷却期
+            Some(false) => true, // 仍在冷却期
             Some(true) => {
                 // 自动恢复：冷却期已过，清除记录
                 self.cooldowns.lock().unwrap().remove(provider_name);
@@ -161,7 +161,10 @@ impl CooldownTracker {
         let cooldown_duration = Self::calculate_cooldown(count);
         let mut cooldowns = self.cooldowns.lock().unwrap();
         // 始终更新冷却时间（后续失败延长冷却）
-        cooldowns.insert(provider_name.to_string(), (Instant::now(), cooldown_duration));
+        cooldowns.insert(
+            provider_name.to_string(),
+            (Instant::now(), cooldown_duration),
+        );
 
         warn!(
             provider = provider_name,
@@ -287,9 +290,7 @@ impl Provider for ReliabilityChain {
                     let sleep_ms = backoff_ms.min(MAX_BACKOFF_MS);
                     debug!(
                         provider = provider.name(),
-                        attempt,
-                        sleep_ms,
-                        "Exponential backoff before retry"
+                        attempt, sleep_ms, "Exponential backoff before retry"
                     );
                     tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                     backoff_ms = backoff_ms.saturating_mul(BACKOFF_MULTIPLIER);
@@ -478,11 +479,13 @@ mod tests {
         // 用极短冷却时间测试自动恢复
         let tracker = CooldownTracker::new();
         // 手动注入短冷却
-        tracker
-            .cooldowns
-            .lock()
-            .unwrap()
-            .insert("openai".to_string(), (Instant::now() - Duration::from_millis(100), Duration::from_millis(50)));
+        tracker.cooldowns.lock().unwrap().insert(
+            "openai".to_string(),
+            (
+                Instant::now() - Duration::from_millis(100),
+                Duration::from_millis(50),
+            ),
+        );
         // 冷却已过期，应自动恢复
         assert!(!tracker.is_in_cooldown("openai"));
     }
@@ -567,16 +570,31 @@ mod tests {
             &self.name
         }
         fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities { native_tool_calling: false, vision: false, streaming: false }
+            ProviderCapabilities {
+                native_tool_calling: false,
+                vision: false,
+                streaming: false,
+            }
         }
-        async fn chat(&self, _req: ChatRequest<'_>, _model: &str, _temp: f64) -> Result<ChatResponse> {
+        async fn chat(
+            &self,
+            _req: ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> Result<ChatResponse> {
             Err(anyhow::Error::new(ProviderError::from_status(
                 self.error_status,
                 "mock error",
                 None,
             )))
         }
-        async fn chat_with_system(&self, _s: Option<&str>, _m: &str, _mo: &str, _t: f64) -> Result<String> {
+        async fn chat_with_system(
+            &self,
+            _s: Option<&str>,
+            _m: &str,
+            _mo: &str,
+            _t: f64,
+        ) -> Result<String> {
             Err(anyhow::Error::new(ProviderError::from_status(
                 self.error_status,
                 "mock error",
@@ -596,12 +614,30 @@ mod tests {
             &self.name
         }
         fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities { native_tool_calling: false, vision: false, streaming: false }
+            ProviderCapabilities {
+                native_tool_calling: false,
+                vision: false,
+                streaming: false,
+            }
         }
-        async fn chat(&self, _req: ChatRequest<'_>, _model: &str, _temp: f64) -> Result<ChatResponse> {
-            Ok(ChatResponse { content: "ok".to_string(), reasoning_content: None })
+        async fn chat(
+            &self,
+            _req: ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: "ok".to_string(),
+                reasoning_content: None,
+            })
         }
-        async fn chat_with_system(&self, _s: Option<&str>, _m: &str, _mo: &str, _t: f64) -> Result<String> {
+        async fn chat_with_system(
+            &self,
+            _s: Option<&str>,
+            _m: &str,
+            _mo: &str,
+            _t: f64,
+        ) -> Result<String> {
             Ok("ok".to_string())
         }
     }
@@ -609,13 +645,24 @@ mod tests {
     #[tokio::test]
     async fn test_chain_falls_back_to_second_provider() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 500 }),
-            Box::new(AlwaysOkProvider { name: "p2".to_string() }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 500,
+            }),
+            Box::new(AlwaysOkProvider {
+                name: "p2".to_string(),
+            }),
         ])
         .with_max_retries(0);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let resp = chain.chat(req, "gpt-4", 0.7).await.unwrap();
         assert_eq!(resp.content, "ok");
     }
@@ -623,13 +670,24 @@ mod tests {
     #[tokio::test]
     async fn test_auth_error_skips_provider_without_circuit() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 401 }),
-            Box::new(AlwaysOkProvider { name: "p2".to_string() }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 401,
+            }),
+            Box::new(AlwaysOkProvider {
+                name: "p2".to_string(),
+            }),
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let resp = chain.chat(req, "gpt-4", 0.7).await.unwrap();
         assert_eq!(resp.content, "ok");
         // Auth error 不应触发熔断器
@@ -639,13 +697,24 @@ mod tests {
     #[tokio::test]
     async fn test_bad_request_skips_provider_without_circuit() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 400 }),
-            Box::new(AlwaysOkProvider { name: "p2".to_string() }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 400,
+            }),
+            Box::new(AlwaysOkProvider {
+                name: "p2".to_string(),
+            }),
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let resp = chain.chat(req, "gpt-4", 0.7).await.unwrap();
         assert_eq!(resp.content, "ok");
         assert!(!chain.tracker.is_in_cooldown("p1"));
@@ -654,13 +723,24 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limit_skips_provider_and_counts_failure() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 429 }),
-            Box::new(AlwaysOkProvider { name: "p2".to_string() }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 429,
+            }),
+            Box::new(AlwaysOkProvider {
+                name: "p2".to_string(),
+            }),
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let resp = chain.chat(req, "gpt-4", 0.7).await.unwrap();
         assert_eq!(resp.content, "ok");
         // RateLimit 应触发熔断器
@@ -670,13 +750,24 @@ mod tests {
     #[tokio::test]
     async fn test_billing_error_skips_provider_and_counts_failure() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 402 }),
-            Box::new(AlwaysOkProvider { name: "p2".to_string() }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 402,
+            }),
+            Box::new(AlwaysOkProvider {
+                name: "p2".to_string(),
+            }),
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let resp = chain.chat(req, "gpt-4", 0.7).await.unwrap();
         assert_eq!(resp.content, "ok");
         // Billing 应触发熔断器
@@ -686,13 +777,24 @@ mod tests {
     #[tokio::test]
     async fn test_timeout_error_is_retryable() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 408 }),
-            Box::new(AlwaysOkProvider { name: "p2".to_string() }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 408,
+            }),
+            Box::new(AlwaysOkProvider {
+                name: "p2".to_string(),
+            }),
         ])
         .with_max_retries(0); // 不重试，fallback 到 p2
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let resp = chain.chat(req, "gpt-4", 0.7).await.unwrap();
         assert_eq!(resp.content, "ok");
         // Timeout 重试耗尽后计入熔断
@@ -702,26 +804,45 @@ mod tests {
     #[tokio::test]
     async fn test_all_providers_fail_returns_error() {
         let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 500 }),
-            Box::new(AlwaysErrorProvider { name: "p2".to_string(), error_status: 500 }),
+            Box::new(AlwaysErrorProvider {
+                name: "p1".to_string(),
+                error_status: 500,
+            }),
+            Box::new(AlwaysErrorProvider {
+                name: "p2".to_string(),
+                error_status: 500,
+            }),
         ])
         .with_max_retries(0);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         let result = chain.chat(req, "gpt-4", 0.7).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_all_providers_in_cooldown_returns_clear_error() {
-        let chain = ReliabilityChain::new(vec![
-            Box::new(AlwaysErrorProvider { name: "p1".to_string(), error_status: 500 }),
-        ])
+        let chain = ReliabilityChain::new(vec![Box::new(AlwaysErrorProvider {
+            name: "p1".to_string(),
+            error_status: 500,
+        })])
         .with_max_retries(0);
 
-        let messages = vec![ChatMessage { role: "user".to_string(), content: "hi".to_string() }];
-        let req = ChatRequest { messages: &messages, system: None };
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+        }];
+        let req = ChatRequest {
+            messages: &messages,
+            system: None,
+        };
         // 第一次失败 → p1 进入冷却
         let _ = chain.chat(req.clone(), "gpt-4", 0.7).await;
 

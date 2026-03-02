@@ -67,7 +67,11 @@ pub fn load_skills(workspace_dir: &Path) -> Vec<Skill> {
     let entries = match std::fs::read_dir(&skills_dir) {
         Ok(e) => e,
         Err(err) => {
-            warn!("failed to read skills directory {}: {}", skills_dir.display(), err);
+            warn!(
+                "failed to read skills directory {}: {}",
+                skills_dir.display(),
+                err
+            );
             return Vec::new();
         }
     };
@@ -87,12 +91,12 @@ pub fn load_skills(workspace_dir: &Path) -> Vec<Skill> {
         }
 
         // Validate skill directory name
-        let dir_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if !is_valid_skill_name(dir_name) {
-            warn!("rejecting skill with invalid directory name: {:?}", dir_name);
+            warn!(
+                "rejecting skill with invalid directory name: {:?}",
+                dir_name
+            );
             continue;
         }
 

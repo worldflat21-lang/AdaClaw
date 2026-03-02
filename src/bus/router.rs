@@ -37,10 +37,10 @@ impl AgentRouter {
             // ── Priority 1: channel_pattern（Glob → Regex 转换）──────────────
             if let Some(pattern) = &rule.channel_pattern {
                 let regex_pattern = glob_to_regex(pattern);
-                if let Ok(re) = Regex::new(&format!("^{}$", regex_pattern)) {
-                    if re.is_match(&msg.channel) {
-                        return Some(rule.agent.clone());
-                    }
+                if let Ok(re) = Regex::new(&format!("^{}$", regex_pattern))
+                    && re.is_match(&msg.channel)
+                {
+                    return Some(rule.agent.clone());
                 }
                 // channel_pattern 不匹配时继续检查下一规则（不检查同规则的其他字段）
                 continue;
@@ -56,10 +56,10 @@ impl AgentRouter {
 
             if let Some(name_pattern) = &rule.sender_name {
                 let regex_pattern = glob_to_regex(name_pattern);
-                if let Ok(re) = Regex::new(&format!("^{}$", regex_pattern)) {
-                    if re.is_match(&msg.sender_name) {
-                        return Some(rule.agent.clone());
-                    }
+                if let Ok(re) = Regex::new(&format!("^{}$", regex_pattern))
+                    && re.is_match(&msg.sender_name)
+                {
+                    return Some(rule.agent.clone());
                 }
                 continue;
             }
@@ -171,18 +171,20 @@ mod tests {
 
     #[test]
     fn test_route_default_fallback() {
-        let router = AgentRouter::new(vec![
-            make_rule(None, None, None, true, "assistant"),
-        ]);
+        let router = AgentRouter::new(vec![make_rule(None, None, None, true, "assistant")]);
         let msg = make_msg("cli", "u1", "Alice");
         assert_eq!(router.route(&msg).as_deref(), Some("assistant"));
     }
 
     #[test]
     fn test_route_no_match_returns_none() {
-        let router = AgentRouter::new(vec![
-            make_rule(Some("telegram:*"), None, None, false, "coder"),
-        ]);
+        let router = AgentRouter::new(vec![make_rule(
+            Some("telegram:*"),
+            None,
+            None,
+            false,
+            "coder",
+        )]);
         let msg = make_msg("cli", "u1", "Alice");
         assert_eq!(router.route(&msg), None);
     }

@@ -1,5 +1,5 @@
 use adaclaw_core::tool::{Tool, ToolResult, ToolSpec};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -111,7 +111,11 @@ pub fn safe_path(workspace: &Path, user_path: &str) -> Result<PathBuf> {
     }
     #[cfg(windows)]
     {
-        let blocked = ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"];
+        let blocked = [
+            "C:\\Windows",
+            "C:\\Program Files",
+            "C:\\Program Files (x86)",
+        ];
         let path_str = canonical.to_string_lossy().to_lowercase();
         for b in &blocked {
             if path_str.starts_with(&b.to_lowercase()) {
@@ -211,11 +215,8 @@ impl Tool for ShellTool {
 
         cmd.current_dir(&self.workspace);
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            cmd.output(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
             Ok(Ok(output)) => {
@@ -240,10 +241,7 @@ impl Tool for ShellTool {
                     error: if output.status.success() {
                         None
                     } else {
-                        Some(format!(
-                            "Exit code: {}",
-                            output.status.code().unwrap_or(-1)
-                        ))
+                        Some(format!("Exit code: {}", output.status.code().unwrap_or(-1)))
                     },
                 })
             }
@@ -273,7 +271,10 @@ mod tests {
     fn test_truncate_output_no_change_when_within_limit() {
         let input = "hello world".to_string();
         let result = truncate_output(&input);
-        assert_eq!(result, input, "output within limit must be returned unchanged");
+        assert_eq!(
+            result, input,
+            "output within limit must be returned unchanged"
+        );
     }
 
     #[test]
@@ -322,7 +323,11 @@ mod tests {
         // MAX_OUTPUT_CHARS CJK chars must NOT be truncated (char count == limit).
         let cjk_char = '中'; // 3 bytes
         let input: String = std::iter::repeat(cjk_char).take(MAX_OUTPUT_CHARS).collect();
-        assert_eq!(input.len(), MAX_OUTPUT_CHARS * 3, "sanity: CJK chars are 3 bytes each");
+        assert_eq!(
+            input.len(),
+            MAX_OUTPUT_CHARS * 3,
+            "sanity: CJK chars are 3 bytes each"
+        );
 
         let result = truncate_output(&input);
         // Must not be truncated (char count == MAX_OUTPUT_CHARS, not byte count)
@@ -346,7 +351,11 @@ mod tests {
         assert_eq!(kept_portion.chars().count(), MAX_OUTPUT_CHARS);
         // All kept chars must be the same CJK character
         assert!(kept_portion.chars().all(|c| c == cjk_char));
-        assert!(result.contains(&format!("showing {}/{} chars", MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS + 5)));
+        assert!(result.contains(&format!(
+            "showing {}/{} chars",
+            MAX_OUTPUT_CHARS,
+            MAX_OUTPUT_CHARS + 5
+        )));
     }
 
     #[test]

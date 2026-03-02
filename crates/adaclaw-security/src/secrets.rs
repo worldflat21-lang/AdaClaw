@@ -8,11 +8,11 @@
 //! - 调用方需要明文时，必须显式调用 `.expose_secret()` ——
 //!   此调用点即密钥暴露位置，便于审计。
 
+use anyhow::{Result, anyhow};
 use chacha20poly1305::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
     ChaCha20Poly1305, Nonce,
+    aead::{Aead, AeadCore, KeyInit, OsRng},
 };
-use anyhow::{anyhow, Result};
 use secrecy::Secret;
 
 pub struct SecretStore {

@@ -140,13 +140,13 @@ fn main() -> anyhow::Result<()> {
 /// `config.toml` is silently ignored here — `start_daemon()` will surface
 /// proper diagnostics during its own config load.
 fn pre_runtime_env_init() {
-    if let Ok(cfg) = config::schema::Config::load_from_file("config.toml") {
-        if let Some(ws) = &cfg.security.workspace {
-            // SAFETY: This function is called before the Tokio runtime is
-            // created.  The process is single-threaded at this point, so there
-            // are no concurrent env-var reads that could race with this write.
-            unsafe { std::env::set_var("ADACLAW_WORKSPACE", ws) }
-        }
+    if let Ok(cfg) = config::schema::Config::load_from_file("config.toml")
+        && let Some(ws) = &cfg.security.workspace
+    {
+        // SAFETY: This function is called before the Tokio runtime is
+        // created.  The process is single-threaded at this point, so there
+        // are no concurrent env-var reads that could race with this write.
+        unsafe { std::env::set_var("ADACLAW_WORKSPACE", ws) }
     }
 }
 
@@ -220,17 +220,17 @@ async fn async_dispatch(cli: Cli) -> anyhow::Result<()> {
 // ── `adaclaw chat` — interactive REPL ────────────────────────────────────────
 
 /// Simple interactive REPL for quick testing without the full daemon.
-async fn run_chat(
-    provider_name: Option<&str>,
-    model_override: Option<&str>,
-) -> anyhow::Result<()> {
+async fn run_chat(provider_name: Option<&str>, model_override: Option<&str>) -> anyhow::Result<()> {
     use std::io::{self, BufRead, Write};
 
     let cfg = config::Config::load();
 
     // Resolve provider
     let (pname, pcfg) = if let Some(name) = provider_name {
-        (name.to_string(), cfg.providers.get(name).cloned().unwrap_or_default())
+        (
+            name.to_string(),
+            cfg.providers.get(name).cloned().unwrap_or_default(),
+        )
     } else {
         // Pick the first configured provider, or default to openai
         cfg.providers
@@ -249,11 +249,7 @@ async fn run_chat(
     let model = model_override
         .map(|s| s.to_string())
         .or_else(|| pcfg.default_model.clone())
-        .or_else(|| {
-            cfg.agents
-                .get("assistant")
-                .map(|a| a.model.clone())
-        })
+        .or_else(|| cfg.agents.get("assistant").map(|a| a.model.clone()))
         .unwrap_or_else(|| "gpt-4o".to_string());
 
     let tools = adaclaw_tools::registry::all_tools(None);
@@ -334,7 +330,10 @@ async fn cmd_stop() {
             }
         }
         Err(e) if e.is_connect() || e.is_timeout() => {
-            println!("ℹ️  Daemon not running (could not connect to http://{}).", addr);
+            println!(
+                "ℹ️  Daemon not running (could not connect to http://{}).",
+                addr
+            );
         }
         Err(e) => {
             eprintln!("Error sending stop signal: {}", e);
@@ -373,7 +372,10 @@ async fn cmd_status() {
             }
         }
         Err(e) if e.is_connect() || e.is_timeout() => {
-            println!("ℹ️  Daemon not running (could not connect to http://{}).", addr);
+            println!(
+                "ℹ️  Daemon not running (could not connect to http://{}).",
+                addr
+            );
             println!("   Run `adaclaw run` or `adaclaw daemon start` to start the daemon.");
         }
         Err(e) => {
@@ -405,9 +407,7 @@ fn cmd_config_check(file: &str) {
     let errors = cfg.validate();
 
     if errors.is_empty() {
-        println!(
-            "✓ Config '{file}' is valid  (schema version {version}/{current})"
-        );
+        println!("✓ Config '{file}' is valid  (schema version {version}/{current})");
     } else {
         eprintln!(
             "✗ Config '{file}' has {} error(s)  (schema version {version}/{current}):\n",

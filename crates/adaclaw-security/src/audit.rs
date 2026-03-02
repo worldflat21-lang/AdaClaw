@@ -81,26 +81,16 @@ pub enum AuditKind {
     },
 
     /// An agent started processing a message.
-    AgentStarted {
-        agent_id: String,
-        model: String,
-    },
+    AgentStarted { agent_id: String, model: String },
 
     /// An agent encountered an unrecoverable error.
-    AgentError {
-        agent_id: String,
-        error: String,
-    },
+    AgentError { agent_id: String, error: String },
 
     /// An OTP verification attempt was made.
-    OtpVerified {
-        success: bool,
-    },
+    OtpVerified { success: bool },
 
     /// A secret was accessed from the encrypted store.
-    SecretAccessed {
-        key: String,
-    },
+    SecretAccessed { key: String },
 
     /// A sub-agent task was delegated.
     SubagentDelegated {
@@ -195,15 +185,12 @@ impl AuditLogger {
     /// Open (or create) the audit log at `path`. Parent directories are created.
     pub fn new(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let path = path.into();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,
             file: Mutex::new(file),
@@ -271,12 +258,7 @@ impl AuditLogger {
     }
 
     /// Log a rate limit exceeded event.
-    pub fn log_rate_limit(
-        &self,
-        sender_id: &str,
-        channel: &str,
-        limit_type: &str,
-    ) {
+    pub fn log_rate_limit(&self, sender_id: &str, channel: &str, limit_type: &str) {
         self.log(
             AuditEvent::new(AuditKind::RateLimitExceeded {
                 sender_id: sender_id.to_string(),

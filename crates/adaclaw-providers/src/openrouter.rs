@@ -1,3 +1,4 @@
+use crate::registry::ProviderSpec;
 /// OpenRouter provider — aggregates hundreds of models under a single API key.
 ///
 /// API surface is identical to OpenAI's `/v1/chat/completions`, so this reuses
@@ -9,10 +10,11 @@
 /// Model names follow the `provider/model` convention used by OpenRouter,
 /// e.g. `openai/gpt-4o`, `anthropic/claude-3-5-sonnet`, `google/gemini-2-flash`.
 /// Use `openrouter/auto` to let OpenRouter choose the best available model.
-use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
-use anyhow::{anyhow, Result};
+use adaclaw_core::provider::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
+};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use crate::registry::ProviderSpec;
 use reqwest::Client;
 use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
@@ -34,7 +36,10 @@ impl OpenRouterProvider {
     pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
         Self {
             key: key.map(|s| Secret::new(s.to_string())),
-            base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
+            base_url: url
+                .unwrap_or(DEFAULT_BASE_URL)
+                .trim_end_matches('/')
+                .to_string(),
             site_url: None,
             app_name: Some("AdaClaw".to_string()),
             client: Client::new(),
@@ -114,7 +119,10 @@ impl Provider for OpenRouterProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content, reasoning_content: None })
+        Ok(ChatResponse {
+            content,
+            reasoning_content: None,
+        })
     }
 
     async fn chat_with_system(

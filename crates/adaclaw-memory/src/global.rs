@@ -78,7 +78,9 @@ impl Memory for GlobalMemory {
         session: Option<&str>,
         topic: Option<&str>,
     ) -> Result<()> {
-        self.inner.store(key, content, category, session, topic).await
+        self.inner
+            .store(key, content, category, session, topic)
+            .await
     }
 
     // ── recall ────────────────────────────────────────────────────────────────
@@ -194,16 +196,25 @@ mod tests {
         let gm = make_global();
 
         // Store a private entry
-        gm.store("priv1", "private deployment notes", Category::Daily, Some("s1"), None)
-            .await
-            .unwrap();
+        gm.store(
+            "priv1",
+            "private deployment notes",
+            Category::Daily,
+            Some("s1"),
+            None,
+        )
+        .await
+        .unwrap();
 
         // Store a global entry
         gm.store_global("glob1", "user prefers English replies")
             .await
             .unwrap();
 
-        let results = gm.recall("user", 10, Some("s1"), RecallScope::Full).await.unwrap();
+        let results = gm
+            .recall("user", 10, Some("s1"), RecallScope::Full)
+            .await
+            .unwrap();
         assert!(!results.is_empty());
         let first = &results[0];
         assert_eq!(first.category, Category::Global);
@@ -226,7 +237,9 @@ mod tests {
         let gm = make_global();
         gm.store_global("g1", "global fact one").await.unwrap();
         gm.store_global("g2", "global fact two").await.unwrap();
-        gm.store("p1", "private", Category::Daily, None, None).await.unwrap();
+        gm.store("p1", "private", Category::Daily, None, None)
+            .await
+            .unwrap();
 
         let globals = gm.list_global().await.unwrap();
         assert_eq!(globals.len(), 2);
@@ -240,7 +253,10 @@ mod tests {
             .await
             .unwrap();
 
-        let results = gm.recall("global knowledge", 20, None, RecallScope::Full).await.unwrap();
+        let results = gm
+            .recall("global knowledge", 20, None, RecallScope::Full)
+            .await
+            .unwrap();
         let count = results.iter().filter(|e| e.key == "shared_key").count();
         assert_eq!(count, 1, "global key must not be duplicated in results");
     }
@@ -250,22 +266,45 @@ mod tests {
         let gm = make_global();
         gm.store_global("g1", "some global fact").await.unwrap();
 
-        let results = gm.recall("global", 10, None, RecallScope::Clean).await.unwrap();
-        assert!(results.is_empty(), "Clean scope must return nothing, even Global entries");
+        let results = gm
+            .recall("global", 10, None, RecallScope::Clean)
+            .await
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "Clean scope must return nothing, even Global entries"
+        );
     }
 
     #[tokio::test]
     async fn test_facts_only_still_returns_global() {
         let gm = make_global();
-        gm.store_global("g1", "some global fact about fox").await.unwrap();
-        gm.store("conv1", "conversation about fox", Category::Conversation, Some("s1"), Some("t1"))
+        gm.store_global("g1", "some global fact about fox")
             .await
             .unwrap();
+        gm.store(
+            "conv1",
+            "conversation about fox",
+            Category::Conversation,
+            Some("s1"),
+            Some("t1"),
+        )
+        .await
+        .unwrap();
 
-        let results = gm.recall("fox", 10, Some("s1"), RecallScope::FactsOnly).await.unwrap();
+        let results = gm
+            .recall("fox", 10, Some("s1"), RecallScope::FactsOnly)
+            .await
+            .unwrap();
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
-        assert!(keys.contains(&"g1"), "Global entries should be in FactsOnly results");
-        assert!(!keys.contains(&"conv1"), "Conversation should not be in FactsOnly results");
+        assert!(
+            keys.contains(&"g1"),
+            "Global entries should be in FactsOnly results"
+        );
+        assert!(
+            !keys.contains(&"conv1"),
+            "Conversation should not be in FactsOnly results"
+        );
     }
 
     #[tokio::test]

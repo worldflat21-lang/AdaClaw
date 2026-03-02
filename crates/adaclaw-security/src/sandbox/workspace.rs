@@ -8,7 +8,7 @@
 //! regardless of the workspace configuration.
 
 use adaclaw_core::sandbox::Sandbox;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -75,8 +75,7 @@ impl WorkspaceSandbox {
 
     /// Create from an environment variable or fallback to `./workspace`.
     pub fn from_env_or_default() -> Self {
-        let path = std::env::var("ADACLAW_WORKSPACE")
-            .unwrap_or_else(|_| "./workspace".to_string());
+        let path = std::env::var("ADACLAW_WORKSPACE").unwrap_or_else(|_| "./workspace".to_string());
         Self::new(&path).unwrap_or_else(|_| Self {
             workspace_root: PathBuf::from("./workspace"),
         })
@@ -121,21 +120,21 @@ impl WorkspaceSandbox {
         // Symlink check: re-canonicalize and compare
         // (the first canonicalize already resolves symlinks, so this is a
         //  redundant safety check for extra paranoia)
-        if let Ok(resolved) = canonical.canonicalize() {
-            if !resolved.starts_with(&self.workspace_root) {
-                warn!(
-                    path = ?canonical,
-                    resolved = ?resolved,
-                    workspace = ?self.workspace_root,
-                    "Symlink escape attempt detected!"
-                );
-                bail!(
-                    "Security: symlink '{}' resolves to '{}' which is outside the workspace. \
-                     Access denied.",
-                    canonical.display(),
-                    resolved.display()
-                );
-            }
+        if let Ok(resolved) = canonical.canonicalize()
+            && !resolved.starts_with(&self.workspace_root)
+        {
+            warn!(
+                path = ?canonical,
+                resolved = ?resolved,
+                workspace = ?self.workspace_root,
+                "Symlink escape attempt detected!"
+            );
+            bail!(
+                "Security: symlink '{}' resolves to '{}' which is outside the workspace. \
+                 Access denied.",
+                canonical.display(),
+                resolved.display()
+            );
         }
 
         Ok(canonical)
@@ -148,10 +147,7 @@ impl WorkspaceSandbox {
             let path_str = path.to_string_lossy();
             for blocked in BLOCKED_UNIX_ROOTS {
                 if path_str.starts_with(blocked) {
-                    bail!(
-                        "Security: access to system path '{}' is blocked.",
-                        path_str
-                    );
+                    bail!("Security: access to system path '{}' is blocked.", path_str);
                 }
             }
         }
@@ -243,7 +239,11 @@ mod tests {
         // Path doesn't exist yet (would be created on write)
         let path = dir.path().join("new_file.txt");
         let result = sandbox.validate_path(&path);
-        assert!(result.is_ok(), "nonexistent file within workspace should be allowed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "nonexistent file within workspace should be allowed: {:?}",
+            result
+        );
     }
 
     #[test]

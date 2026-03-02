@@ -27,8 +27,7 @@ impl FastEmbedProvider {
     /// Subsequent calls load from the cache instantly.
     pub fn new() -> Result<Self> {
         let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-                .with_show_download_progress(true),
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
         )?;
         Ok(Self {
             inner: Arc::new(Mutex::new(model)),
@@ -76,14 +75,21 @@ mod tests {
         let provider = FastEmbedProvider::new().unwrap();
         assert_eq!(provider.dim(), DIM);
 
-        let embeddings = provider.embed(&["hello world", "how are you"]).await.unwrap();
+        let embeddings = provider
+            .embed(&["hello world", "how are you"])
+            .await
+            .unwrap();
         assert_eq!(embeddings.len(), 2);
         assert_eq!(embeddings[0].len(), DIM);
         assert_eq!(embeddings[1].len(), DIM);
 
         // Sanity: embeddings should be L2-normalised (magnitude ≈ 1)
         let mag: f32 = embeddings[0].iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((mag - 1.0).abs() < 0.01, "embedding not normalised: mag={}", mag);
+        assert!(
+            (mag - 1.0).abs() < 0.01,
+            "embedding not normalised: mag={}",
+            mag
+        );
     }
 
     #[tokio::test]

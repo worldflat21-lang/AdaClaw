@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/Ada103iow103.png" width="80" alt="AdaClaw">
+  <img src="assets/Ada103iow103.png" width="160" alt="AdaClaw">
   <h1>AdaClaw ⚡</h1>
   <p><strong>轻量 · 安全 · 多渠道 · 多 Agent 的 Rust AI Agent 运行时</strong></p>
   <p>
@@ -45,7 +45,7 @@ AdaClaw 是一个开源 **AI Agent 运行时**——单个 Rust 二进制文件�
 ## 整体架构
 
 ```
- 渠道层  Telegram · Discord · Slack · 钉钉 · 飞书 · 企业微信 · Webhook · CLI
+ 渠道层  Telegram · Discord · Slack · 钉钉 · 飞书 · 企业微信 · WhatsApp · Webhook · CLI
       │
       ▼
  ┌──────────────────────────────────────────────────┐
@@ -136,6 +136,7 @@ docker compose logs -f
 | **Slack** | Events API Webhook | HMAC-SHA256 + 重放保护 |
 | **钉钉（DingTalk）** | Outgoing Webhook | HMAC-SHA256 |
 | **飞书 / Lark** | 事件订阅 | Verification token |
+| **WhatsApp** | Cloud API Webhook（HTTPS）| HMAC-SHA256（X-Hub-Signature-256）|
 | **企业微信（WeCom）** | AIBot Webhook | SHA1 + AES-256-CBC |
 | **通用 Webhook** | HTTP POST | HMAC-SHA256（可选） |
 | **CLI** | 交互式 REPL | 仅本地 |

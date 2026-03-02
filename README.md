@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/Ada103iow103.png" width="80" alt="AdaClaw">
+  <img src="assets/Ada103iow103.png" width="160" alt="AdaClaw">
   <h1>AdaClaw ⚡</h1>
   <p><strong>Lightweight · Secure · Multi-channel · Multi-Agent AI Agent Runtime in Rust</strong></p>
   <p>
@@ -45,7 +45,7 @@ Run it on your own machine, a $10 ARM board, or a container. It costs nothing be
 ## Architecture
 
 ```
- Channels  Telegram · Discord · Slack · DingTalk · Feishu · WeCom · Webhook · CLI
+ Channels  Telegram · Discord · Slack · DingTalk · Feishu · WeCom · WhatsApp · Webhook · CLI
       │
       ▼
  ┌──────────────────────────────────────────────────┐
@@ -136,6 +136,7 @@ The bundled `docker-compose.yml` is hardened: read-only rootfs, dropped capabili
 | **Slack** | Events API Webhook | HMAC-SHA256 + replay guard |
 | **DingTalk** | Outgoing Webhook | HMAC-SHA256 |
 | **Feishu / Lark** | Event Subscription | Verification token |
+| **WhatsApp** | Cloud API Webhook (HTTPS) | HMAC-SHA256 (X-Hub-Signature-256) |
 | **WeCom / WeChat Work** | AIBot Webhook | SHA1 + AES-256-CBC |
 | **Generic Webhook** | HTTP POST | HMAC-SHA256 (optional) |
 | **CLI** | Interactive REPL | Local only |

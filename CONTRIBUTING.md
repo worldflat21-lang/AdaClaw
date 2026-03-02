@@ -38,7 +38,7 @@ cargo fmt --all
 
 ### Architecture Principles
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) before making significant changes. Key principles:
+Key principles:
 
 1. **Trait-first** — new integrations should implement existing traits (`Provider`, `Channel`, `Memory`, `Tool`)
 2. **Data-driven** — new providers/channels register via `ProviderSpec` / config, not hardcoded logic

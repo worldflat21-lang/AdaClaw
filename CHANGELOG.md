@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- Web UI (AdaClaw Dashboard) — closed-source companion repository
+- Web UI (AdaClaw Dashboard)
 - PostgreSQL memory backend for distributed deployments
 - WebRTC voice channel with Whisper ASR + TTS
 

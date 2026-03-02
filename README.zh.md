@@ -146,16 +146,16 @@ docker compose logs -f
 
 | Provider | 模型 | 说明 |
 |--|--|--|
-| **OpenRouter** | 200+ 模型 | 单 Key 接入所有模型，推荐首选 |
-| **OpenAI** | GPT-4o, o3, o1 | 原生 tool-calling |
-| **Anthropic** | Claude 3.5/3.7 Sonnet, Opus | 原生 tool-calling |
-| **Google Gemini** | Gemini 1.5/2.0 Flash, Pro | OpenAI 兼容 |
-| **Grok（xAI）** | Grok-2, Grok-3 | OpenAI 兼容 |
-| **DeepSeek** | deepseek-chat, deepseek-reasoner | 性价比高 |
-| **Ollama** | llama3, mistral, qwen2.5… | 完全本地，无需 API Key |
-| **通义千问（Qwen）** | qwen-max, qwen-plus | OpenAI 兼容 |
-| **Kimi（Moonshot）** | moonshot-v1-* | OpenAI 兼容 |
-| **智谱 GLM** | glm-4, glm-4-flash | OpenAI 兼容 |
+| **OpenRouter** | 200+ 模型 | 单 Key 接入所有模型 |
+| **OpenAI** | GPT-4o, o3, o1, … | 原生 tool-calling |
+| **Anthropic** | Claude Sonnet, Opus, … | 原生 tool-calling |
+| **Google Gemini** | Gemini Flash, Pro, … | OpenAI 兼容 |
+| **Grok（xAI）** | Grok-2, Grok-3, … | OpenAI 兼容 |
+| **DeepSeek** | deepseek-chat, deepseek-reasoner, … | 性价比高 |
+| **Ollama** | llama3, mistral, qwen, … | 完全本地，无需 API Key |
+| **通义千问（Qwen）** | qwen-max, qwen-plus, … | OpenAI 兼容 |
+| **Kimi（Moonshot）** | moonshot-v1-*, … | OpenAI 兼容 |
+| **智谱 GLM** | glm-4, glm-4-flash, … | OpenAI 兼容 |
 | **任意 OpenAI 兼容端点** | — | 自定义 `api_base` |
 
 `ReliabilityChain` 对任意 Provider 序列提供**指数退避 + circuit breaker**：某个 Provider 故障时自动切换到下一个，退避节奏为 1/5/25/60 分钟。
@@ -276,7 +276,7 @@ cargo clippy -- -D warnings
 
 ## 开源协议
 
-[Apache License 2.0](LICENSE) — Copyright 2026 Qiuming Huang
+[Apache License 2.0](LICENSE)
 
 ---
 

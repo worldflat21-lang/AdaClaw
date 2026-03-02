@@ -146,16 +146,16 @@ The bundled `docker-compose.yml` is hardened: read-only rootfs, dropped capabili
 
 | Provider | Models | Notes |
 |--|--|--|
-| **OpenRouter** | 200+ models | Single key for all — recommended |
-| **OpenAI** | GPT-4o, o3, o1 | Native tool-calling |
-| **Anthropic** | Claude 3.5/3.7 Sonnet, Opus | Native tool-calling |
-| **Google Gemini** | Gemini 1.5/2.0 Flash, Pro | OpenAI-compat |
-| **Grok (xAI)** | Grok-2, Grok-3 | OpenAI-compat |
-| **DeepSeek** | deepseek-chat, deepseek-reasoner | Cost-efficient |
-| **Ollama** | llama3, mistral, qwen2.5… | Fully local — no API key |
-| **Qwen (Alibaba)** | qwen-max, qwen-plus | OpenAI-compat |
-| **Kimi (Moonshot)** | moonshot-v1-* | OpenAI-compat |
-| **GLM (Zhipu)** | glm-4, glm-4-flash | OpenAI-compat |
+| **OpenRouter** | 200+ models | Single key for all models |
+| **OpenAI** | GPT-4o, o3, o1, … | Native tool-calling |
+| **Anthropic** | Claude Sonnet, Opus, … | Native tool-calling |
+| **Google Gemini** | Gemini Flash, Pro, … | OpenAI-compat |
+| **Grok (xAI)** | Grok-2, Grok-3, … | OpenAI-compat |
+| **DeepSeek** | deepseek-chat, deepseek-reasoner, … | Cost-efficient |
+| **Ollama** | llama3, mistral, qwen, … | Fully local — no API key |
+| **Qwen (Alibaba)** | qwen-max, qwen-plus, … | OpenAI-compat |
+| **Kimi (Moonshot)** | moonshot-v1-*, … | OpenAI-compat |
+| **GLM (Zhipu)** | glm-4, glm-4-flash, … | OpenAI-compat |
 | **Any OpenAI-compat** | — | Custom `api_base` |
 
 `ReliabilityChain` wraps any provider sequence with **exponential backoff + circuit breaker**. If one degrades, the next takes over automatically.
@@ -274,7 +274,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branch conventions and how to add a n
 
 ## License
 
-[Apache License 2.0](LICENSE) — Copyright 2026 Qiuming Huang
+[Apache License 2.0](LICENSE)
 
 ---
 

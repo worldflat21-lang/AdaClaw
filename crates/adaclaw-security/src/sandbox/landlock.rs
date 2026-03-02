@@ -118,6 +118,7 @@ pub fn apply(config: &LandlockConfig) -> anyhow::Result<()> {
 // ── Linux implementation ──────────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)] // landlock requires raw libc syscalls — intentional unsafe
 mod linux_impl {
     use super::*;
     use std::ffi::CString;

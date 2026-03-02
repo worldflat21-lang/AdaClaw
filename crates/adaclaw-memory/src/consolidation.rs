@@ -28,11 +28,12 @@
 ///
 /// ## Usage
 ///
-/// ```rust
+/// ```rust,no_run
 /// use adaclaw_memory::consolidation::consolidate;
+/// use adaclaw_core::memory::Category;
 ///
-/// // Run weekly from the cron scheduler
-/// consolidate(&memory, &provider, "gpt-4o-mini", &[Category::Core, Category::Daily], 50).await?;
+/// // Run weekly from the cron scheduler (inside an async context)
+/// // consolidate(&memory, &provider, "gpt-4o-mini", &[Category::Core, Category::Daily], Some(50)).await?;
 /// ```
 ///
 /// ## Safety

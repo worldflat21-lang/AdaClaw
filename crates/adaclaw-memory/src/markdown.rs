@@ -420,15 +420,19 @@ mod tests {
         mem.store("conv-t1", "rust topic conv", Category::Conversation, Some("s1"), Some("topic-rust"))
             .await
             .unwrap();
-        mem.store("conv-t2", "poem topic conv", Category::Conversation, Some("s1"), Some("topic-poem"))
+        mem.store("conv-t2", "poem haiku autumn", Category::Conversation, Some("s1"), Some("topic-poem"))
             .await
             .unwrap();
+        // Core entries have no session; markdown recall skips session-filter for
+        // non-Conversation categories, so core1 is always reachable.
+        // Use content that matches the query ("rust") so the content filter passes.
         mem.store("core1", "core fact about rust", Category::Core, None, None)
             .await
             .unwrap();
 
         let scope = RecallScope::CurrentTopic { topic_id: "topic-rust".to_string() };
-        let results = mem.recall("topic", 10, Some("s1"), scope).await.unwrap();
+        // Query "rust": matches conv-t1 and core1, but NOT conv-t2 ("poem haiku autumn")
+        let results = mem.recall("rust", 10, Some("s1"), scope).await.unwrap();
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
         assert!(keys.contains(&"conv-t1"), "rust topic conv should be included");
         assert!(!keys.contains(&"conv-t2"), "poem topic conv should be excluded");

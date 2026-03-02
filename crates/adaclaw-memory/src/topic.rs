@@ -197,7 +197,13 @@ impl TopicManager {
     // ── Keyword-based check ───────────────────────────────────────────────────
 
     fn check_with_keywords(&self, new_message: &str) -> TopicSwitchResult {
-        let recent = self.recent_messages.lock().unwrap();
+        // Clone the recent messages and immediately drop the lock.
+        // Do NOT hold `recent_messages` across the call to
+        // `find_or_create_topic_by_keywords` — that function also acquires
+        // `recent_messages`, and `std::sync::Mutex` is not reentrant,
+        // so holding it here would cause a deadlock.
+        let recent: Vec<String> = self.recent_messages.lock().unwrap().clone();
+
         if recent.len() < 2 {
             return TopicSwitchResult::SameTopic;
         }
@@ -220,6 +226,7 @@ impl TopicManager {
         } else if overlap >= RELATED_TOPIC_THRESHOLD {
             TopicSwitchResult::PartialDrift
         } else {
+            // Lock is no longer held here — safe to call find_or_create.
             let new_topic = self.find_or_create_topic_by_keywords();
             *self.current_topic_id.lock().unwrap() = new_topic.clone();
             TopicSwitchResult::Switched { new_topic_id: new_topic }
@@ -231,7 +238,9 @@ impl TopicManager {
     /// Search known topics for a label similar to the current messages.
     /// Creates a new UUID topic if no match found above `TOPIC_REUSE_THRESHOLD`.
     fn find_or_create_topic_by_keywords(&self) -> String {
-        let recent = self.recent_messages.lock().unwrap();
+        // Clone recent messages and drop the lock before acquiring known_topics.
+        // This avoids potential lock-ordering deadlocks.
+        let recent: Vec<String> = self.recent_messages.lock().unwrap().clone();
         let new_words: HashSet<String> = recent
             .iter()
             .flat_map(|m| tokenize_simple(m))
@@ -242,7 +251,9 @@ impl TopicManager {
             .iter()
             .map(|(id, label)| {
                 let label_words: HashSet<String> = tokenize_simple(label).collect();
-                let score = intersection_ratio(&new_words, &label_words);
+                // Compute how much of the label appears in the new message
+                // (label as reference, not new_words — avoids penalising longer messages)
+                let score = intersection_ratio(&label_words, &new_words);
                 (id, score)
             })
             .filter(|(_, score)| *score >= TOPIC_REUSE_THRESHOLD)
@@ -376,12 +387,16 @@ mod tests {
     #[test]
     fn test_keyword_same_topic() {
         let tm = TopicManager::new();
-        // Prime with several Rust-related messages
-        for msg in &["help me with rust traits", "rust ownership model", "rust async await"] {
+        // Prime with Rust messages that share "rust" and "lifetimes" with the new message.
+        // history = recent[..len-1] = first two messages
+        // history_words ≈ {"rust","traits","lifetimes","ownership","model"} (5 words)
+        // new_words     ≈ {"lifetimes","work","rust"} (3 words)
+        // intersection  = {"rust","lifetimes"} → ratio = 2/5 = 0.40 ≥ 0.30 → PartialDrift
+        for msg in &["rust traits and lifetimes", "rust ownership model", "rust async await"] {
             tm.push_recent_message(msg);
         }
         let result = tm.check_with_keywords("how do lifetimes work in rust");
-        // "rust" appears in both history and new → should be same or partial
+        // "rust" and "lifetimes" appear in both history and new → should be same or partial
         assert!(
             result == TopicSwitchResult::SameTopic || result == TopicSwitchResult::PartialDrift,
             "Expected same/partial topic, got {:?}", result

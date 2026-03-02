@@ -6,8 +6,8 @@
 //! # 使用方式
 //!
 //! 在 `server.rs` 中启用：
-//! ```rust
-//! let app = build_router(Some(whatsapp_state));
+//! ```rust,no_run
+//! // let app = build_router(Some(whatsapp_state));
 //! ```
 //!
 //! 或使用独立 WhatsApp 端口（默认，与现有 Slack/DingTalk 模式一致）：

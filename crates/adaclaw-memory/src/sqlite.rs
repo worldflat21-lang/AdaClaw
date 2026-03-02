@@ -915,7 +915,10 @@ mod tests {
         mem.store("conv-poem", "poem topic fox", Category::Conversation, Some("s1"), Some("topic-poem"))
             .await
             .unwrap();
-        mem.store("core1", "core fox fact", Category::Core, None, None)
+        // Core entries are stored with the same session so the session-scoped FTS
+        // query can find them; scope_matches_entry then passes them unconditionally
+        // (Category::Core is not topic-filtered in CurrentTopic scope).
+        mem.store("core1", "core fox fact", Category::Core, Some("s1"), None)
             .await
             .unwrap();
 

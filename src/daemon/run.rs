@@ -59,10 +59,8 @@ pub async fn start_daemon() -> Result<()> {
         "Config loaded"
     );
 
-    if let Some(ws) = &config.security.workspace {
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("ADACLAW_WORKSPACE", ws) };
-    }
+    // Note: ADACLAW_WORKSPACE is set by `pre_runtime_env_init()` in main.rs
+    // before the Tokio runtime starts — the only safe context for set_var.
 
     // ── 2. 安全子系统初始化 ────────────────────────────────────────────────────
 

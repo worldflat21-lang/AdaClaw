@@ -458,6 +458,16 @@ mod tests {
     use crate::config::schema::{AgentConfig, ChannelConfig, RoutingRule};
     use std::collections::HashMap;
 
+    /// Mutex that serialises tests which read or write process-wide environment
+    /// variables.
+    ///
+    /// `cargo test` runs test functions in parallel within a single process by
+    /// default.  Concurrent calls to `std::env::set_var` / `remove_var` on the
+    /// same keys are undefined behaviour (they share the C runtime `environ`
+    /// array without synchronisation).  Holding this lock for the duration of
+    /// any test that touches env vars prevents the data race.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Minimal config that passes all validation checks.
     fn valid_config() -> Config {
         let mut cfg = Config::default();
@@ -743,8 +753,8 @@ mod tests {
 
     #[test]
     fn test_telegram_channel_missing_token() {
-        // Remove any env override to make the test deterministic
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // Serialise with other env-var-mutating tests to prevent data races.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("ADACLAW_TELEGRAM_TOKEN") };
 
         let mut cfg = valid_config();
@@ -854,9 +864,8 @@ mod tests {
 
     #[test]
     fn test_openai_embed_without_key_is_an_error() {
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
-        // TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::remove_var("ADACLAW_OPENAI_API_KEY") };
 
         let mut cfg = valid_config();
@@ -928,11 +937,9 @@ mod tests {
 
     #[test]
     fn test_multiple_errors_collected_at_once() {
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("ADACLAW_TELEGRAM_TOKEN") };
-        // TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
-        // TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::remove_var("ADACLAW_OPENAI_API_KEY") };
 
         let mut cfg = valid_config();

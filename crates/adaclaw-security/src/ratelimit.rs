@@ -46,8 +46,13 @@ pub struct RateLimitConfig {
 fn default_per_user() -> u32 {
     60
 }
+/// Default per-channel rate limit.
+///
+/// Unified with `schema::RateLimitConfig::default_per_channel()` (both 200).
+/// Previously this was 120, which differed from the schema default and caused
+/// the effective limit to depend on which code path was taken.
 fn default_per_channel() -> u32 {
-    120
+    200
 }
 fn default_max_actions() -> u32 {
     200

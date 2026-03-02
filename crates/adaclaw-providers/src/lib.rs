@@ -11,12 +11,12 @@ pub mod ollama;
 
 // Legacy per-provider modules — kept for reference; functionality is now
 // handled by `openai_compat`.  Will be removed in a future cleanup pass.
-#[deprecated(since = "0.2.0", note = "use openai_compat instead")]
+#[deprecated(since = "0.1.0", note = "use openai_compat instead")]
 #[allow(deprecated)]
 pub mod deepseek;
-#[deprecated(since = "0.2.0", note = "use openai_compat instead")]
+#[deprecated(since = "0.1.0", note = "use openai_compat instead")]
 #[allow(deprecated)]
 pub mod openrouter;
-#[deprecated(since = "0.2.0", note = "use openai_compat instead")]
+#[deprecated(since = "0.1.0", note = "use openai_compat instead")]
 #[allow(deprecated)]
 pub mod groq;

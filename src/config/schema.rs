@@ -182,6 +182,12 @@ pub struct ProviderConfig {
     /// Request timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Maximum output tokens per request.
+    ///
+    /// When `None`, the provider uses its own built-in default
+    /// (e.g. Anthropic uses 8192).  Set this to override for models that
+    /// support longer outputs (e.g. `max_tokens = 16384` for Claude 3 Opus).
+    pub max_tokens: Option<u32>,
 }
 
 fn default_timeout() -> u64 {

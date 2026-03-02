@@ -114,7 +114,7 @@ impl SessionStore {
     /// 调用方应确保摘要已经生成完毕再调用此方法。
     pub async fn compact(&self, session_id: &str, summary: &str) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow!("lock error: {}", e))?;
-        conn.execute_batch(&format!("BEGIN IMMEDIATE;"))?;
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
         conn.execute(
             "DELETE FROM sessions WHERE session_id = ?1",
             params![session_id],

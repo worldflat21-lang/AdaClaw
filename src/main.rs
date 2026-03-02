@@ -98,9 +98,17 @@ enum SkillAction {
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Respect RUST_LOG env var, default to "info"
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+/// Synchronous entry point.
+///
+/// The Tokio runtime is created manually (rather than via `#[tokio::main]`) so
+/// that we can run single-threaded initialisation code — specifically
+/// `pre_runtime_env_init()` — **before** any Tokio worker threads are spawned.
+/// This is required because `std::env::set_var` is not safe to call from a
+/// multi-threaded context (POSIX / C11 UB).
+fn main() -> anyhow::Result<()> {
+    // Initialise the subscriber before any async code runs.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -110,6 +118,41 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // ── Pre-runtime env initialisation (single-threaded, safe) ───────────────
+    // `std::env::set_var` is not safe to call from async / multi-threaded code.
+    // We must set `ADACLAW_WORKSPACE` here, before the Tokio runtime starts,
+    // while the process is guaranteed to be single-threaded.
+    if let Commands::Run = &cli.command {
+        pre_runtime_env_init();
+    }
+
+    // Build the Tokio runtime and run all async commands.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_dispatch(cli))
+}
+
+/// Initialise process-environment variables from `config.toml` **before** the
+/// multi-threaded Tokio runtime is started.
+///
+/// Only called for `adaclaw run`.  Best-effort: a missing or invalid
+/// `config.toml` is silently ignored here — `start_daemon()` will surface
+/// proper diagnostics during its own config load.
+fn pre_runtime_env_init() {
+    if let Ok(cfg) = config::schema::Config::load_from_file("config.toml") {
+        if let Some(ws) = &cfg.security.workspace {
+            // SAFETY: This function is called before the Tokio runtime is
+            // created.  The process is single-threaded at this point, so there
+            // are no concurrent env-var reads that could race with this write.
+            unsafe { std::env::set_var("ADACLAW_WORKSPACE", ws) }
+        }
+    }
+}
+
+// ── Async command dispatcher ──────────────────────────────────────────────────
+
+async fn async_dispatch(cli: Cli) -> anyhow::Result<()> {
     match &cli.command {
         Commands::Run => {
             daemon::run::start_daemon().await?;
@@ -171,9 +214,10 @@ async fn main() -> anyhow::Result<()> {
             }
         },
     }
-
     Ok(())
 }
+
+// ── `adaclaw chat` — interactive REPL ────────────────────────────────────────
 
 /// Simple interactive REPL for quick testing without the full daemon.
 async fn run_chat(
@@ -255,6 +299,8 @@ async fn run_chat(
     Ok(())
 }
 
+// ── `adaclaw stop` ────────────────────────────────────────────────────────────
+
 /// `adaclaw stop` — Send stop signal to the running daemon via gateway API.
 ///
 /// Reads `gateway.bind` and `gateway.bearer_token` from config.toml and sends
@@ -296,6 +342,8 @@ async fn cmd_stop() {
     }
 }
 
+// ── `adaclaw status` ──────────────────────────────────────────────────────────
+
 /// `adaclaw status` — Query daemon status via gateway API.
 ///
 /// Reads `gateway.bind` from config.toml and sends `GET /v1/status`.
@@ -333,6 +381,8 @@ async fn cmd_status() {
         }
     }
 }
+
+// ── `adaclaw config check` ────────────────────────────────────────────────────
 
 /// `adaclaw config check [--file <path>]`
 ///

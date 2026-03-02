@@ -49,6 +49,12 @@ impl SqliteMemory {
     /// (each connection to `:memory:` creates an independent database, but with
     /// pool size 1 the pool always reuses the single pre-created connection).
     pub fn new() -> Self {
+        // Opening an in-memory SQLite database is practically infallible — the
+        // only failure path requires the SQLite library itself to be absent or
+        // broken.  We suppress the `clippy::expect_used` lint here because
+        // `Default::default()` has no error channel and callers cannot
+        // reasonably handle this condition.
+        #[allow(clippy::expect_used)]
         Self::open(":memory:", None).expect("Failed to create in-memory SQLite database")
     }
 
@@ -583,7 +589,7 @@ impl Memory for SqliteMemory {
             ),
             (None, Some(_)) => (
                 "SELECT key, content, category, session, topic FROM memory
-                 WHERE session = ?2 ORDER BY updated_at DESC",
+                 WHERE session = ?1 ORDER BY updated_at DESC",
                 None,
             ),
             (None, None) => (
@@ -619,8 +625,10 @@ impl Memory for SqliteMemory {
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?
             }
+            // SQL uses `?1` for session (fixed from the previous `?2` / Null-placeholder
+            // style that was confusing to read and inconsistent with other branches).
             (None, Some(sess)) => {
-                stmt.query_map(params![rusqlite::types::Null, sess], |row| {
+                stmt.query_map(params![sess], |row| {
                     Ok(row_to_entry(
                         row.get(0)?,
                         row.get(1)?,

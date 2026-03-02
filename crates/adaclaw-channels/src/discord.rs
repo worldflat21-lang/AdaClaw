@@ -52,10 +52,13 @@ pub struct DiscordChannel {
 
 impl DiscordChannel {
     pub fn new(token: String, allow_from: Vec<String>, intents: Option<u64>) -> Self {
+        // reqwest::Client::builder().build() only fails when custom TLS/proxy
+        // configuration is invalid.  With a simple timeout, it is effectively
+        // infallible; fall back to the default client if it somehow does fail.
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
-            .expect("Failed to build HTTP client");
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             base: BaseChannel::new("discord").with_allow_from(allow_from),
@@ -464,21 +467,53 @@ impl DiscordChannel {
     }
 }
 
-fn split_discord_message(content: &str, max_len: usize) -> Vec<String> {
-    if content.len() <= max_len {
+/// Split a Discord message into chunks of at most `max_chars` **Unicode scalar
+/// values** (characters), which is what Discord's 2000-character limit refers to.
+///
+/// Splitting is done at character boundaries (never mid-codepoint), preferring
+/// newline → space → hard cut, in that order.
+fn split_discord_message(content: &str, max_chars: usize) -> Vec<String> {
+    // Use .chars().count() — byte length is wrong for CJK / emoji characters.
+    if content.chars().count() <= max_chars {
         return vec![content.to_string()];
     }
+
     let mut chunks = Vec::new();
     let mut remaining = content;
+
     while !remaining.is_empty() {
-        if remaining.len() <= max_len {
+        if remaining.chars().count() <= max_chars {
             chunks.push(remaining.to_string());
             break;
         }
-        let cut = &remaining[..max_len];
-        let pos = cut.rfind('\n').unwrap_or_else(|| cut.rfind(' ').unwrap_or(max_len));
-        chunks.push(remaining[..pos].to_string());
-        remaining = remaining[pos..].trim_start();
+
+        // Find the byte offset of the max_chars-th character boundary.
+        // char_indices() is safe — it always returns valid UTF-8 boundaries.
+        let hard_byte_pos = remaining
+            .char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
+        let candidate = &remaining[..hard_byte_pos];
+
+        // Prefer splitting at a newline, then at a space, then hard-cut.
+        let cut_byte_pos = if let Some(nl) = candidate.rfind('\n') {
+            // Only use the newline if it's at least halfway through the chunk.
+            if candidate[..nl].chars().count() >= max_chars / 2 {
+                nl + 1 // include the newline in the chunk
+            } else {
+                candidate.rfind(' ').map(|p| p + 1).unwrap_or(hard_byte_pos)
+            }
+        } else if let Some(sp) = candidate.rfind(' ') {
+            sp + 1
+        } else {
+            hard_byte_pos // hard cut at character boundary
+        };
+
+        chunks.push(remaining[..cut_byte_pos].to_string());
+        remaining = remaining[cut_byte_pos..].trim_start_matches(['\n', ' ']);
     }
+
     chunks
 }

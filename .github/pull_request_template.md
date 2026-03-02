@@ -32,7 +32,7 @@ Describe how you tested these changes:
 - [ ] Code follows the project's Rust style (no clippy warnings)
 - [ ] Self-review completed
 - [ ] Tests added/updated for new functionality
-- [ ] Documentation updated (README / ARCHITECTURE.md / code comments)
+- [ ] Documentation updated (README / docs/ / code comments)
 - [ ] CHANGELOG.md updated (for user-facing changes)
 - [ ] No sensitive data (API keys, tokens) in the code
 

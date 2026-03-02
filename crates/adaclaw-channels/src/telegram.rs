@@ -135,10 +135,13 @@ pub struct TelegramChannel {
 
 impl TelegramChannel {
     pub fn new(token: String) -> Self {
+        // reqwest::Client::builder().build() only fails when custom TLS/proxy
+        // configuration is invalid.  With a simple timeout, it is effectively
+        // infallible; fall back to the default client if it somehow does fail.
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
             .build()
-            .expect("Failed to build reqwest client");
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             base: BaseChannel::new("telegram"),

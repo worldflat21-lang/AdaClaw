@@ -414,11 +414,14 @@ impl AgentEngine {
                 Some(topic_id),
             )
             .await
-        { Err(e) => {
-            warn!(key, error = %e, "Failed to index conversation turn");
-        } _ => {
-            debug!(key, topic_id, "Conversation turn indexed");
-        }}
+        {
+            Err(e) => {
+                warn!(key, error = %e, "Failed to index conversation turn");
+            }
+            _ => {
+                debug!(key, topic_id, "Conversation turn indexed");
+            }
+        }
     }
 }
 

@@ -9,21 +9,36 @@ use serde_json::Value;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Default `max_tokens` for Anthropic requests.
+///
+/// Raised from 4096 to 8192 — Claude 3.5 Sonnet and newer models support at
+/// least 8192 output tokens.  This value is used when no `max_tokens` override
+/// is provided via `ProviderConfig`.
+///
+/// Configurable per-provider via `config.toml`:
+/// ```toml
+/// [providers.anthropic]
+/// max_tokens = 16384
+/// ```
+const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 pub struct AnthropicProvider {
     /// Phase 14-P1-2: API key wrapped in `Secret<String>`.
     key: Option<Secret<String>>,
     base_url: String,
     client: Client,
+    /// Maximum output tokens per request.
+    /// Defaults to `DEFAULT_MAX_TOKENS`; overrideable via `ProviderConfig`.
+    max_tokens: u32,
 }
 
 impl AnthropicProvider {
-    pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
+    pub fn new(key: Option<&str>, url: Option<&str>, max_tokens: Option<u32>) -> Self {
         Self {
             key: key.map(|s| Secret::new(s.to_string())),
             base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
             client: Client::new(),
+            max_tokens: max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         }
     }
 
@@ -57,7 +72,7 @@ impl Provider for AnthropicProvider {
 
         let mut body = serde_json::json!({
             "model": model,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "max_tokens": self.max_tokens,
             "messages": messages,
             "temperature": temp,
         });
@@ -138,6 +153,6 @@ pub fn spec() -> ProviderSpec {
             vision: true,
             streaming: true,
         },
-        factory: Box::new(|key, url| Box::new(AnthropicProvider::new(key, url))),
+        factory: Box::new(|key, url| Box::new(AnthropicProvider::new(key, url, None))),
     }
 }

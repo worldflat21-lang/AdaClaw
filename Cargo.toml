@@ -24,7 +24,7 @@ unwrap_used = "allow"
 expect_used = "allow"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["AdaClaw Contributors"]
 description = "Lightweight, secure, multi-channel Rust AI Agent Runtime"

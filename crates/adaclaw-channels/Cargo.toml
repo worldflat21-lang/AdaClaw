@@ -40,7 +40,7 @@ axum = "0.7"
 tokio-util = "0.7"
 
 # ── Discord / Slack Socket Mode (WebSocket) ───────────────────────────────────
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
 # ── WeCom AES-CBC message decryption ──────────────────────────────────────────
 base64 = "0.22"
@@ -59,7 +59,13 @@ native-tls = "0.2"
 # mailparse：MIME/RFC822 邮件解析
 mailparse = "0.14"
 # lettre：同步 SMTP 发信
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "native-tls", "builder"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "rustls-tls", "builder"] }
 
 # ── URL encoding（Matrix channel 路径编码）────────────────────────────────────
 urlencoding = "2.1"
+
+# ── Cross-compilation: vendor OpenSSL from source so imap/native-tls works
+# on targets that don't have system OpenSSL (e.g. aarch64 cross-compile).
+# The cross Docker container provides a C cross-compiler, so vendored builds work.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }

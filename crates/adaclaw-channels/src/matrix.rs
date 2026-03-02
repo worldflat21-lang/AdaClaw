@@ -34,10 +34,10 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -106,17 +106,14 @@ impl MatrixChannel {
         allow_from: Vec<String>,
         extra: &HashMap<String, String>,
     ) -> Result<Self> {
-        let access_token = token
-            .ok_or_else(|| anyhow!("channels.matrix.token (access_token) is required"))?;
+        let access_token =
+            token.ok_or_else(|| anyhow!("channels.matrix.token (access_token) is required"))?;
         let homeserver = extra
             .get("homeserver")
             .cloned()
             .ok_or_else(|| anyhow!("channels.matrix.extra.homeserver is required"))?;
         let homeserver = homeserver.trim_end_matches('/').to_string();
-        let user_id = extra
-            .get("user_id")
-            .cloned()
-            .unwrap_or_default();
+        let user_id = extra.get("user_id").cloned().unwrap_or_default();
         let device_id = extra
             .get("device_id")
             .cloned()
@@ -176,10 +173,7 @@ impl MatrixChannel {
     }
 
     /// 执行一次 /sync 请求（长轮询）
-    async fn sync_once(
-        &self,
-        since: Option<&str>,
-    ) -> Result<SyncResponse> {
+    async fn sync_once(&self, since: Option<&str>) -> Result<SyncResponse> {
         let mut url = format!(
             "{}/_matrix/client/v3/sync?timeout={}",
             self.homeserver, self.sync_timeout_ms
@@ -312,8 +306,8 @@ impl Channel for MatrixChannel {
                             );
 
                             // 白名单检查（支持 room_id 或 sender 匹配）
-                            let allowed = self.base.is_allowed(&sender)
-                                || self.base.is_allowed(&room_id);
+                            let allowed =
+                                self.base.is_allowed(&sender) || self.base.is_allowed(&room_id);
                             if !allowed {
                                 warn!(
                                     channel = "matrix",
@@ -331,10 +325,7 @@ impl Channel for MatrixChannel {
                                     Value::String(event_id.clone()),
                                 );
                             }
-                            metadata.insert(
-                                "room_id".to_string(),
-                                Value::String(room_id.clone()),
-                            );
+                            metadata.insert("room_id".to_string(), Value::String(room_id.clone()));
                             if let Some(ts) = event.origin_server_ts {
                                 metadata.insert(
                                     "origin_server_ts".to_string(),

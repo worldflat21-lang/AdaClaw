@@ -123,35 +123,110 @@ pub fn classify_error(err: &anyhow::Error) -> ProviderErrorKind {
 
     let s = err.to_string().to_lowercase();
 
-    if contains_any(&s, &["429", "rate limit", "rate_limit", "ratelimit", "too many requests",
-        "exceeded your current quota", "exceeded quota", "resource has been exhausted",
-        "resource_exhausted", "quota exceeded", "usage limit"]) {
+    if contains_any(
+        &s,
+        &[
+            "429",
+            "rate limit",
+            "rate_limit",
+            "ratelimit",
+            "too many requests",
+            "exceeded your current quota",
+            "exceeded quota",
+            "resource has been exhausted",
+            "resource_exhausted",
+            "quota exceeded",
+            "usage limit",
+        ],
+    ) {
         return ProviderErrorKind::RateLimit;
     }
     if contains_any(&s, &["overloaded_error", "overloaded"]) {
         return ProviderErrorKind::RateLimit;
     }
-    if contains_any(&s, &["402", "payment required", "insufficient credits", "credit balance",
-        "plans & billing", "insufficient balance", "billing"]) {
+    if contains_any(
+        &s,
+        &[
+            "402",
+            "payment required",
+            "insufficient credits",
+            "credit balance",
+            "plans & billing",
+            "insufficient balance",
+            "billing",
+        ],
+    ) {
         return ProviderErrorKind::Billing;
     }
-    if contains_any(&s, &["408", "timeout", "timed out", "deadline exceeded",
-        "context deadline exceeded", "request timeout", "connection timed out"]) {
+    if contains_any(
+        &s,
+        &[
+            "408",
+            "timeout",
+            "timed out",
+            "deadline exceeded",
+            "context deadline exceeded",
+            "request timeout",
+            "connection timed out",
+        ],
+    ) {
         return ProviderErrorKind::Timeout;
     }
-    if contains_any(&s, &["401", "403", "invalid api key", "invalid_api_key",
-        "incorrect api key", "invalid token", "authentication", "re-authenticate",
-        "oauth token refresh failed", "unauthorized", "forbidden", "access denied",
-        "expired", "token has expired", "no credentials found", "no api key found"]) {
+    if contains_any(
+        &s,
+        &[
+            "401",
+            "403",
+            "invalid api key",
+            "invalid_api_key",
+            "incorrect api key",
+            "invalid token",
+            "authentication",
+            "re-authenticate",
+            "oauth token refresh failed",
+            "unauthorized",
+            "forbidden",
+            "access denied",
+            "expired",
+            "token has expired",
+            "no credentials found",
+            "no api key found",
+        ],
+    ) {
         return ProviderErrorKind::AuthError;
     }
-    if contains_any(&s, &["400", "bad request", "invalid request", "invalid_request_error",
-        "string should match pattern", "tool_use.id", "tool_use_id",
-        "messages.1.content.1.tool_use.id", "invalid request format"]) {
+    if contains_any(
+        &s,
+        &[
+            "400",
+            "bad request",
+            "invalid request",
+            "invalid_request_error",
+            "string should match pattern",
+            "tool_use.id",
+            "tool_use_id",
+            "messages.1.content.1.tool_use.id",
+            "invalid request format",
+        ],
+    ) {
         return ProviderErrorKind::BadRequest;
     }
-    if contains_any(&s, &["500", "502", "503", "521", "522", "523", "524", "529",
-        "internal server error", "service unavailable", "bad gateway"]) {
+    if contains_any(
+        &s,
+        &[
+            "500",
+            "502",
+            "503",
+            "521",
+            "522",
+            "523",
+            "524",
+            "529",
+            "internal server error",
+            "service unavailable",
+            "bad gateway",
+        ],
+    ) {
         return ProviderErrorKind::ServerError;
     }
 
@@ -246,88 +321,142 @@ mod tests {
 
     #[test]
     fn test_classify_rate_limit_429_string() {
-        assert_eq!(classify_error(&anyhow::anyhow!("HTTP 429 Too Many Requests")), ProviderErrorKind::RateLimit);
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("HTTP 429 Too Many Requests")),
+            ProviderErrorKind::RateLimit
+        );
     }
 
     #[test]
     fn test_classify_rate_limit_patterns() {
         for pattern in &[
-            "rate limit exceeded", "rate_limit reached", "too many requests",
-            "exceeded your current quota", "resource has been exhausted",
-            "resource_exhausted", "quota exceeded", "usage limit reached",
+            "rate limit exceeded",
+            "rate_limit reached",
+            "too many requests",
+            "exceeded your current quota",
+            "resource has been exhausted",
+            "resource_exhausted",
+            "quota exceeded",
+            "usage limit reached",
         ] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::RateLimit,
-                "pattern should classify as RateLimit: {pattern}");
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::RateLimit,
+                "pattern should classify as RateLimit: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_overloaded_as_rate_limit() {
-        for pattern in &["overloaded_error", r#"{"type": "overloaded_error"}"#, "server is overloaded"] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::RateLimit,
-                "overloaded should → RateLimit: {pattern}");
+        for pattern in &[
+            "overloaded_error",
+            r#"{"type": "overloaded_error"}"#,
+            "server is overloaded",
+        ] {
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::RateLimit,
+                "overloaded should → RateLimit: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_billing_patterns() {
         for pattern in &[
-            "402 payment required", "payment required", "insufficient credits to complete the request",
-            "credit balance too low", "visit plans & billing page", "insufficient balance in your account",
+            "402 payment required",
+            "payment required",
+            "insufficient credits to complete the request",
+            "credit balance too low",
+            "visit plans & billing page",
+            "insufficient balance in your account",
         ] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::Billing,
-                "billing pattern: {pattern}");
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::Billing,
+                "billing pattern: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_timeout_patterns() {
         for pattern in &[
-            "408 request timeout", "request timeout", "connection timed out",
-            "deadline exceeded", "context deadline exceeded",
+            "408 request timeout",
+            "request timeout",
+            "connection timed out",
+            "deadline exceeded",
+            "context deadline exceeded",
         ] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::Timeout,
-                "timeout pattern: {pattern}");
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::Timeout,
+                "timeout pattern: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_auth_patterns() {
         for pattern in &[
-            "HTTP 401 Unauthorized: invalid api key", "invalid_api_key",
-            "incorrect api key provided", "authentication failed",
-            "re-authenticate to continue", "oauth token refresh failed",
-            "access denied for this resource", "token has expired",
-            "no credentials found", "no api key found",
+            "HTTP 401 Unauthorized: invalid api key",
+            "invalid_api_key",
+            "incorrect api key provided",
+            "authentication failed",
+            "re-authenticate to continue",
+            "oauth token refresh failed",
+            "access denied for this resource",
+            "token has expired",
+            "no credentials found",
+            "no api key found",
         ] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::AuthError,
-                "auth pattern: {pattern}");
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::AuthError,
+                "auth pattern: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_bad_request_patterns() {
         for pattern in &[
-            "HTTP 400 Bad Request: invalid_request_error", "invalid request format",
-            "string should match pattern for tool_use.id", "tool_use.id is required",
+            "HTTP 400 Bad Request: invalid_request_error",
+            "invalid request format",
+            "string should match pattern for tool_use.id",
+            "tool_use.id is required",
             "messages.1.content.1.tool_use.id must be a string",
         ] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::BadRequest,
-                "bad request pattern: {pattern}");
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::BadRequest,
+                "bad request pattern: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_server_error_patterns() {
-        for pattern in &["HTTP 500 internal server error", "502 bad gateway", "503 service unavailable"] {
-            assert_eq!(classify_error(&anyhow::anyhow!("{}", pattern)), ProviderErrorKind::ServerError,
-                "server error pattern: {pattern}");
+        for pattern in &[
+            "HTTP 500 internal server error",
+            "502 bad gateway",
+            "503 service unavailable",
+        ] {
+            assert_eq!(
+                classify_error(&anyhow::anyhow!("{}", pattern)),
+                ProviderErrorKind::ServerError,
+                "server error pattern: {pattern}"
+            );
         }
     }
 
     #[test]
     fn test_classify_unknown() {
-        assert_eq!(classify_error(&anyhow::anyhow!("some completely random error")), ProviderErrorKind::Unknown);
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("some completely random error")),
+            ProviderErrorKind::Unknown
+        );
     }
 
     #[test]

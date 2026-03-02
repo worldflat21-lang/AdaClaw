@@ -100,10 +100,7 @@ fn validate_agents(cfg: &Config, errors: &mut Vec<ValidationError>) {
         if agent.temperature < 0.0 || agent.temperature > 2.0 {
             errors.push(ValidationError {
                 field: format!("{prefix}.temperature"),
-                message: format!(
-                    "must be between 0.0 and 2.0, got {}",
-                    agent.temperature
-                ),
+                message: format!("must be between 0.0 and 2.0, got {}", agent.temperature),
             });
         }
 
@@ -130,9 +127,7 @@ fn validate_agents(cfg: &Config, errors: &mut Vec<ValidationError>) {
         }
 
         // provider cross-check: if providers map is non-empty, warn about unknown provider
-        if !cfg.providers.is_empty()
-            && !cfg.providers.contains_key(&agent.provider)
-        {
+        if !cfg.providers.is_empty() && !cfg.providers.contains_key(&agent.provider) {
             errors.push(ValidationError {
                 field: format!("{prefix}.provider"),
                 message: format!(
@@ -141,12 +136,7 @@ fn validate_agents(cfg: &Config, errors: &mut Vec<ValidationError>) {
                      Add a [providers.{prov}] section or set \
                      ADACLAW_{upper}_API_KEY.",
                     prov = agent.provider,
-                    known = cfg
-                        .providers
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    known = cfg.providers.keys().cloned().collect::<Vec<_>>().join(", "),
                     upper = agent.provider.to_uppercase(),
                 ),
             });
@@ -172,11 +162,7 @@ fn validate_routing(cfg: &Config, errors: &mut Vec<ValidationError>) {
                 message: format!(
                     "references unknown agent \"{}\" (known agents: {})",
                     rule.agent,
-                    agent_ids
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    agent_ids.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
             });
         }
@@ -291,17 +277,13 @@ fn validate_channels(cfg: &Config, errors: &mut Vec<ValidationError>) {
                 if ch.token.is_none() {
                     errors.push(ValidationError {
                         field: format!("{prefix}.token"),
-                        message: "Slack channel requires a bot token (xoxb-...)."
-                            .to_string(),
+                        message: "Slack channel requires a bot token (xoxb-...).".to_string(),
                     });
                 }
             }
 
             "feishu" => {
-                let missing_app_id = ch
-                    .extra
-                    .get("app_id")
-                    .is_none_or(|s| s.trim().is_empty());
+                let missing_app_id = ch.extra.get("app_id").is_none_or(|s| s.trim().is_empty());
                 let missing_app_secret = ch
                     .extra
                     .get("app_secret")
@@ -318,8 +300,7 @@ fn validate_channels(cfg: &Config, errors: &mut Vec<ValidationError>) {
                 if missing_app_secret {
                     errors.push(ValidationError {
                         field: format!("{prefix}.extra.app_secret"),
-                        message: "Feishu channel requires extra.app_secret."
-                            .to_string(),
+                        message: "Feishu channel requires extra.app_secret.".to_string(),
                     });
                 }
             }
@@ -446,7 +427,11 @@ trait OrDefaultStr {
 
 impl OrDefaultStr for String {
     fn or_default_str(self, default: &str) -> String {
-        if self.is_empty() { default.to_string() } else { self }
+        if self.is_empty() {
+            default.to_string()
+        } else {
+            self
+        }
     }
 }
 
@@ -659,7 +644,9 @@ mod tests {
         });
         let errors = validate(&cfg);
         assert!(
-            errors.iter().any(|e| e.field.contains("routing") && e.field.contains("agent")),
+            errors
+                .iter()
+                .any(|e| e.field.contains("routing") && e.field.contains("agent")),
             "expected routing agent error, got: {:#?}",
             errors
         );
@@ -808,7 +795,11 @@ mod tests {
         let has_app_id_err = errors.iter().any(|e| e.field.contains("app_id"));
         let has_secret_err = errors.iter().any(|e| e.field.contains("app_secret"));
         assert!(has_app_id_err, "expected app_id error, got: {:#?}", errors);
-        assert!(has_secret_err, "expected app_secret error, got: {:#?}", errors);
+        assert!(
+            has_secret_err,
+            "expected app_secret error, got: {:#?}",
+            errors
+        );
     }
 
     #[test]
@@ -856,7 +847,9 @@ mod tests {
         cfg.memory.embedding_provider = "cohere".to_string();
         let errors = validate(&cfg);
         assert!(
-            errors.iter().any(|e| e.field == "memory.embedding_provider"),
+            errors
+                .iter()
+                .any(|e| e.field == "memory.embedding_provider"),
             "expected embedding_provider error, got: {:#?}",
             errors
         );

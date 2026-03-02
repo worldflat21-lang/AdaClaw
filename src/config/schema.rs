@@ -84,7 +84,9 @@ impl Config {
     /// failures, etc.).  For production use prefer [`load_from_file`] so
     /// errors are visible.
     pub fn load() -> Self {
-        Self::load_from_file("config.toml").unwrap_or_default().with_env()
+        Self::load_from_file("config.toml")
+            .unwrap_or_default()
+            .with_env()
     }
 
     /// Run semantic validation and return all field-level errors found.
@@ -114,8 +116,8 @@ impl Config {
     /// Priority: env vars > config file.
     fn apply_env_overrides(&mut self) {
         // ADACLAW_OPENAI_API_KEY → providers["openai"].api_key
-        if let Ok(key) = std::env::var("ADACLAW_OPENAI_API_KEY")
-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        if let Ok(key) =
+            std::env::var("ADACLAW_OPENAI_API_KEY").or_else(|_| std::env::var("OPENAI_API_KEY"))
         {
             self.providers
                 .entry("openai".to_string())
@@ -271,7 +273,6 @@ pub struct ChannelConfig {
     pub webhook_url: Option<String>,
 
     // ── Phase 6 per-channel access control ────────────────────────────────────
-
     /// Per-channel sender allowlist (deny-by-default when non-empty).
     /// Supports "id|username" compound format for Telegram etc.
     /// Takes priority over the global SecurityConfig.allowlist.
@@ -455,7 +456,6 @@ pub struct SecurityConfig {
     pub workspace: Option<String>,
 
     // ── Phase 5 additions ─────────────────────────────────────────────────────
-
     /// Path to write structured audit events (JSONL). `None` = disabled.
     /// Example: `".adaclaw/audit.jsonl"`
     pub audit_log: Option<String>,
@@ -473,7 +473,6 @@ pub struct SecurityConfig {
     pub rate_limit: RateLimitConfig,
 
     // ── Phase 11 Round 5: Approval UX ─────────────────────────────────────────
-
     /// Tools that never require approval in Supervised mode.
     ///
     /// Example: `["file_read", "memory_recall", "memory_store"]`

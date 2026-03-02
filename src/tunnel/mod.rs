@@ -56,15 +56,9 @@ pub fn start_tunnel(
     tailscale_funnel: bool,
 ) -> Option<TunnelHandle> {
     match provider.trim().to_ascii_lowercase().as_str() {
-        "cloudflare" | "cf" => {
-            cloudflare::start(port, cloudflare_token?)
-        }
-        "ngrok" => {
-            ngrok::start(port, ngrok_token, ngrok_domain)
-        }
-        "tailscale" | "ts" => {
-            tailscale::start(port, tailscale_funnel)
-        }
+        "cloudflare" | "cf" => cloudflare::start(port, cloudflare_token?),
+        "ngrok" => ngrok::start(port, ngrok_token, ngrok_domain),
+        "tailscale" | "ts" => tailscale::start(port, tailscale_funnel),
         "none" | "" => None,
         other => {
             warn!("Unknown tunnel provider '{}', tunnel disabled", other);

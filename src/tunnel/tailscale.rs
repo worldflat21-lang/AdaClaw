@@ -7,7 +7,7 @@
 //! Tailscale must be installed and authenticated (`tailscale up`) before use.
 //! Funnel requires Tailscale 1.36+ and the Funnel feature enabled on your tailnet.
 
-use super::{spawn_process, TunnelHandle};
+use super::{TunnelHandle, spawn_process};
 use std::process::Command;
 use tracing::info;
 

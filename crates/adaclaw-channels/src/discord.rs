@@ -23,10 +23,10 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -138,7 +138,11 @@ impl DiscordChannel {
                     .get("retry_after")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(1.0);
-                warn!(channel = "discord", retry_after = retry_after, "Rate limited");
+                warn!(
+                    channel = "discord",
+                    retry_after = retry_after,
+                    "Rate limited"
+                );
                 tokio::time::sleep(Duration::from_secs_f64(retry_after)).await;
                 // Retry once
                 let _ = self
@@ -151,11 +155,7 @@ impl DiscordChannel {
             } else if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
-                return Err(anyhow!(
-                    "Discord send failed: HTTP {} — {}",
-                    status,
-                    body
-                ));
+                return Err(anyhow!("Discord send failed: HTTP {} — {}", status, body));
             }
         }
         Ok(())
@@ -188,7 +188,10 @@ impl Channel for DiscordChannel {
                     if !self.base.is_running() {
                         break;
                     }
-                    info!(channel = "discord", "Gateway session ended, reconnecting...");
+                    info!(
+                        channel = "discord",
+                        "Gateway session ended, reconnecting..."
+                    );
                     retry_delay = 1; // 正常断线，重置退避
                 }
                 Err(e) => {
@@ -201,7 +204,8 @@ impl Channel for DiscordChannel {
                 warn!(
                     channel = "discord",
                     retry_in = retry_delay,
-                    "Reconnecting to Discord Gateway in {}s", retry_delay
+                    "Reconnecting to Discord Gateway in {}s",
+                    retry_delay
                 );
                 tokio::time::sleep(Duration::from_secs(retry_delay)).await;
             }
@@ -277,9 +281,12 @@ impl DiscordChannel {
                 Message::Close(_) => return Ok(()),
                 Message::Ping(_) => {
                     // 自动 Pong
-                    let _ = tx.send(
-                        serde_json::to_string(&json!({ "op": 1, "d": null })).unwrap_or_default()
-                    ).await;
+                    let _ = tx
+                        .send(
+                            serde_json::to_string(&json!({ "op": 1, "d": null }))
+                                .unwrap_or_default(),
+                        )
+                        .await;
                     continue;
                 }
                 _ => continue,
@@ -352,19 +359,17 @@ impl DiscordChannel {
                 }
 
                 // DISPATCH
-                0 => {
-                    match event_type.as_str() {
-                        "READY" => {
-                            info!(channel = "discord", "Discord Gateway READY");
-                        }
-                        "MESSAGE_CREATE" => {
-                            if let Some(d) = data {
-                                self.handle_message_create(d, bus).await;
-                            }
-                        }
-                        _ => {}
+                0 => match event_type.as_str() {
+                    "READY" => {
+                        info!(channel = "discord", "Discord Gateway READY");
                     }
-                }
+                    "MESSAGE_CREATE" => {
+                        if let Some(d) = data {
+                            self.handle_message_create(d, bus).await;
+                        }
+                    }
+                    _ => {}
+                },
 
                 // HEARTBEAT ACK
                 11 => {
@@ -462,7 +467,14 @@ impl DiscordChannel {
 
         // session_id = channel_id（send() 方法用来调用 REST API）
         self.base
-            .handle_message(bus, &sender_id, &sender_name, &channel_id, &content, metadata)
+            .handle_message(
+                bus,
+                &sender_id,
+                &sender_name,
+                &channel_id,
+                &content,
+                metadata,
+            )
             .await;
     }
 }

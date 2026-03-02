@@ -15,16 +15,16 @@
 //! 3. `tools/list`（获取工具清单）
 
 use super::{
-    extract_tool_output, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    McpToolDescription, McpTransport, MCP_PROTOCOL_VERSION,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, MCP_PROTOCOL_VERSION, McpToolDescription,
+    McpTransport, extract_tool_output,
 };
 use adaclaw_core::tool::ToolResult;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -256,9 +256,7 @@ impl StdioMcpClient {
 
         self.send_request_with_state(state, "initialize", params)
             .await
-            .with_context(|| {
-                format!("MCP initialize failed for server '{}'", self.server_name)
-            })?;
+            .with_context(|| format!("MCP initialize failed for server '{}'", self.server_name))?;
 
         // 确认初始化
         self.send_notification_with_state(
@@ -320,11 +318,17 @@ impl McpTransport for StdioMcpClient {
                     return Ok(ToolResult {
                         success: false,
                         output: String::new(),
-                        error: Some(format!("MCP server failed and could not restart: {}", restart_err)),
+                        error: Some(format!(
+                            "MCP server failed and could not restart: {}",
+                            restart_err
+                        )),
                     });
                 }
                 // 重试一次
-                match self.send_request_with_state(state, "tools/call", params).await {
+                match self
+                    .send_request_with_state(state, "tools/call", params)
+                    .await
+                {
                     Ok(resp) => Ok(extract_tool_output(resp)),
                     Err(e2) => Ok(ToolResult {
                         success: false,

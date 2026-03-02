@@ -29,7 +29,6 @@ pub fn build_registry() -> Vec<ProviderSpec> {
         crate::openai::spec(),
         crate::anthropic::spec(),
         crate::ollama::spec(),
-
         // ── OpenAI-compatible providers (table-driven) ────────────────────────
         // International
         crate::openai_compat::spec_for("deepseek"),

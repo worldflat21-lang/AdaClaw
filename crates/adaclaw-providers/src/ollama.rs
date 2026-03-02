@@ -1,8 +1,10 @@
-use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
-use anyhow::Result;
-use async_trait::async_trait;
 use crate::error::ProviderError;
 use crate::registry::ProviderSpec;
+use adaclaw_core::provider::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
+};
+use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 
@@ -16,7 +18,10 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new(_key: Option<&str>, url: Option<&str>) -> Self {
         Self {
-            base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
+            base_url: url
+                .unwrap_or(DEFAULT_BASE_URL)
+                .trim_end_matches('/')
+                .to_string(),
             client: Client::new(),
         }
     }
@@ -69,7 +74,9 @@ impl Provider for OllamaProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::Error::new(ProviderError::from_status(status, &text, None)));
+            return Err(anyhow::Error::new(ProviderError::from_status(
+                status, &text, None,
+            )));
         }
 
         let data: Value = resp.json().await?;
@@ -79,7 +86,10 @@ impl Provider for OllamaProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content, reasoning_content: None })
+        Ok(ChatResponse {
+            content,
+            reasoning_content: None,
+        })
     }
 
     async fn chat_with_system(
@@ -102,11 +112,19 @@ impl Provider for OllamaProvider {
 
     async fn warmup(&self) -> Result<()> {
         // Check if Ollama is reachable
-        let resp = self.client.get(format!("{}/api/tags", self.base_url)).send().await;
+        let resp = self
+            .client
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .await;
         match resp {
             Ok(r) if r.status().is_success() => Ok(()),
             Ok(r) => Err(anyhow::anyhow!("Ollama warmup failed: HTTP {}", r.status())),
-            Err(e) => Err(anyhow::anyhow!("Ollama not reachable at {}: {}", self.base_url, e)),
+            Err(e) => Err(anyhow::anyhow!(
+                "Ollama not reachable at {}: {}",
+                self.base_url,
+                e
+            )),
         }
     }
 

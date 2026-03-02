@@ -9,8 +9,8 @@ use adaclaw_core::channel::{InboundMessage, MessageBus, MessageContent};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use uuid::Uuid;
 
@@ -107,8 +107,7 @@ impl BaseChannel {
                 || sender_id == trimmed
                 || id_part == allowed
                 || id_part == trimmed
-                || (!user_part.is_empty()
-                    && (user_part == allowed || user_part == trimmed))
+                || (!user_part.is_empty() && (user_part == allowed || user_part == trimmed))
             {
                 return true;
             }

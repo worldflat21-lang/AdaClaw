@@ -18,7 +18,7 @@
 //! 用户取得配对码后，可将其传给客户端在 `/v1/chat` 请求的 Bearer token 位置
 //! 进行首次身份验证（一次性，消耗后失效）。
 
-use axum::{response::IntoResponse, Json};
+use axum::{Json, response::IntoResponse};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde_json::json;
@@ -68,13 +68,13 @@ impl PairingState {
     /// 尝试验证并消耗配对码。
     /// 返回 `true` 表示码正确且未过期（已消耗，不可重用）。
     pub fn consume(&mut self, candidate: &str) -> bool {
-        if let Some(code) = self.current_valid() {
-            if constant_time_eq(code.as_bytes(), candidate.as_bytes()) {
-                // 消耗：清除码，防止重放
-                self.code = None;
-                self.generated_at = None;
-                return true;
-            }
+        if let Some(code) = self.current_valid()
+            && constant_time_eq(code.as_bytes(), candidate.as_bytes())
+        {
+            // 消耗：清除码，防止重放
+            self.code = None;
+            self.generated_at = None;
+            return true;
         }
         false
     }
@@ -113,7 +113,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    let diff = a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    let diff = a
+        .iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y));
     diff == 0
 }
 
@@ -159,18 +162,30 @@ mod tests {
     #[test]
     fn test_pairing_state_lifecycle() {
         let mut state = PairingState::new();
-        assert!(state.current_valid().is_none(), "new state should have no code");
+        assert!(
+            state.current_valid().is_none(),
+            "new state should have no code"
+        );
 
         let code = state.generate_new().to_string();
-        assert!(state.current_valid().is_some(), "code should be valid after generation");
+        assert!(
+            state.current_valid().is_some(),
+            "code should be valid after generation"
+        );
 
         // Wrong code → rejected, code still present
         assert!(!state.consume("000000"));
-        assert!(state.current_valid().is_some(), "wrong code must not consume the valid one");
+        assert!(
+            state.current_valid().is_some(),
+            "wrong code must not consume the valid one"
+        );
 
         // Correct code → consumed
         assert!(state.consume(&code));
-        assert!(state.current_valid().is_none(), "consumed code must be cleared");
+        assert!(
+            state.current_valid().is_none(),
+            "consumed code must be cleared"
+        );
 
         // Replay attempt → rejected
         assert!(!state.consume(&code));

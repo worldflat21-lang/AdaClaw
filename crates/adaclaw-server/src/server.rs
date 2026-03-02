@@ -1,8 +1,7 @@
 use anyhow::Result;
 use axum::{
-    middleware,
+    Router, middleware,
     routing::{get, post},
-    Router,
 };
 use std::net::SocketAddr;
 use tokio::net::TcpListener;

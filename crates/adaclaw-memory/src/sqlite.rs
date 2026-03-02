@@ -1,10 +1,10 @@
 use adaclaw_core::memory::{Category, Memory, MemoryEntry, RecallScope};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 // Phase 14-P2-1: r2d2 SQLite connection pool (multiple readers, WAL-safe writers)
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::embeddings::EmbeddingProvider;
 use std::sync::Arc;
@@ -173,10 +173,8 @@ impl SqliteMemory {
 
         let mut stmt = conn.prepare(sql)?;
         let keys: Vec<String> = if let Some(sess) = session {
-            stmt.query_map(params![query_bytes, k as i64, sess], |row| {
-                row.get(0)
-            })?
-            .collect::<std::result::Result<_, _>>()?
+            stmt.query_map(params![query_bytes, k as i64, sess], |row| row.get(0))?
+                .collect::<std::result::Result<_, _>>()?
         } else {
             stmt.query_map(params![query_bytes, k as i64], |row| row.get(0))?
                 .collect::<std::result::Result<_, _>>()?
@@ -238,23 +236,20 @@ impl SqliteMemory {
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            rusqlite::params_from_iter(keys.iter()),
-            |row| {
-                Ok(row_to_entry(
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )?;
-        let mut map: std::collections::HashMap<String, MemoryEntry> =
-            rows.collect::<std::result::Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|e| (e.key.clone(), e))
-                .collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(keys.iter()), |row| {
+            Ok(row_to_entry(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?;
+        let mut map: std::collections::HashMap<String, MemoryEntry> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|e| (e.key.clone(), e))
+            .collect();
 
         let ordered: Vec<MemoryEntry> = keys.iter().filter_map(|k| map.remove(k)).collect();
         Ok(ordered)
@@ -413,7 +408,11 @@ impl Memory for SqliteMemory {
                 match embedder.embed_one(content).await {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        tracing::warn!("Embedding failed for key '{}': {}; skipping vector index", key, e);
+                        tracing::warn!(
+                            "Embedding failed for key '{}': {}; skipping vector index",
+                            key,
+                            e
+                        );
                         None
                     }
                 }
@@ -469,19 +468,18 @@ impl Memory for SqliteMemory {
                         let q_bytes = vec_to_bytes(&q_emb);
                         let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
 
-                        let vec_keys =
-                            Self::vector_search(&conn, &q_bytes, fetch_n, session)
-                                .unwrap_or_default();
+                        let vec_keys = Self::vector_search(&conn, &q_bytes, fetch_n, session)
+                            .unwrap_or_default();
                         let fts_keys =
-                            Self::fts_search(&conn, query, fetch_n, session)
-                                .unwrap_or_default();
+                            Self::fts_search(&conn, query, fetch_n, session).unwrap_or_default();
 
                         if !vec_keys.is_empty() || !fts_keys.is_empty() {
                             let rrf = rrf_merge(&vec_keys, &fts_keys);
                             let mut top_keys: Vec<String> =
                                 rrf.into_iter().map(|r| r.key).collect();
                             top_keys = self.filter_keys_by_scope(&conn, top_keys, &scope)?;
-                            let entries = Self::fetch_by_keys(&conn, &top_keys[..limit.min(top_keys.len())])?;
+                            let entries =
+                                Self::fetch_by_keys(&conn, &top_keys[..limit.min(top_keys.len())])?;
                             return Ok(entries);
                         }
                     }
@@ -549,9 +547,8 @@ impl Memory for SqliteMemory {
 
     async fn get(&self, key: &str) -> Result<Option<MemoryEntry>> {
         let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT key, content, category, session, topic FROM memory WHERE key = ?1",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT key, content, category, session, topic FROM memory WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row_to_entry(
@@ -601,8 +598,8 @@ impl Memory for SqliteMemory {
 
         let mut stmt = conn.prepare(sql)?;
         let entries = match (cat_str, session) {
-            (Some(cat), Some(sess)) => {
-                stmt.query_map(params![cat, sess], |row| {
+            (Some(cat), Some(sess)) => stmt
+                .query_map(params![cat, sess], |row| {
                     Ok(row_to_entry(
                         row.get(0)?,
                         row.get(1)?,
@@ -611,10 +608,9 @@ impl Memory for SqliteMemory {
                         row.get(4)?,
                     ))
                 })?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-            }
-            (Some(cat), None) => {
-                stmt.query_map(params![cat], |row| {
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            (Some(cat), None) => stmt
+                .query_map(params![cat], |row| {
                     Ok(row_to_entry(
                         row.get(0)?,
                         row.get(1)?,
@@ -623,12 +619,11 @@ impl Memory for SqliteMemory {
                         row.get(4)?,
                     ))
                 })?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-            }
+                .collect::<std::result::Result<Vec<_>, _>>()?,
             // SQL uses `?1` for session (fixed from the previous `?2` / Null-placeholder
             // style that was confusing to read and inconsistent with other branches).
-            (None, Some(sess)) => {
-                stmt.query_map(params![sess], |row| {
+            (None, Some(sess)) => stmt
+                .query_map(params![sess], |row| {
                     Ok(row_to_entry(
                         row.get(0)?,
                         row.get(1)?,
@@ -637,10 +632,9 @@ impl Memory for SqliteMemory {
                         row.get(4)?,
                     ))
                 })?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-            }
-            (None, None) => {
-                stmt.query_map([], |row| {
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            (None, None) => stmt
+                .query_map([], |row| {
                     Ok(row_to_entry(
                         row.get(0)?,
                         row.get(1)?,
@@ -649,8 +643,7 @@ impl Memory for SqliteMemory {
                         row.get(4)?,
                     ))
                 })?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-            }
+                .collect::<std::result::Result<Vec<_>, _>>()?,
         };
 
         Ok(entries)
@@ -669,8 +662,7 @@ impl Memory for SqliteMemory {
 
     async fn count(&self) -> Result<usize> {
         let conn = self.pool.get().map_err(|e| anyhow!("Pool error: {}", e))?;
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM memory", [], |row| row.get(0))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM memory", [], |row| row.get(0))?;
         Ok(count as usize)
     }
 
@@ -721,7 +713,10 @@ impl SqliteMemory {
         let mut stmt = conn.prepare(&sql)?;
         let meta: std::collections::HashMap<String, (String, Option<String>)> = stmt
             .query_map(rusqlite::params_from_iter(keys.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?),
+                ))
             })?
             .collect::<std::result::Result<_, _>>()?;
 
@@ -823,9 +818,15 @@ mod tests {
     #[tokio::test]
     async fn test_store_with_topic() {
         let mem = make_mem();
-        mem.store("k-topic", "content", Category::Conversation, Some("s1"), Some("topic-rust"))
-            .await
-            .unwrap();
+        mem.store(
+            "k-topic",
+            "content",
+            Category::Conversation,
+            Some("s1"),
+            Some("topic-rust"),
+        )
+        .await
+        .unwrap();
         let entry = mem.get("k-topic").await.unwrap().unwrap();
         assert_eq!(entry.topic, Some("topic-rust".to_string()));
     }
@@ -844,16 +845,24 @@ mod tests {
     async fn test_count() {
         let mem = make_mem();
         assert_eq!(mem.count().await.unwrap(), 0);
-        mem.store("a", "aa", Category::Daily, None, None).await.unwrap();
-        mem.store("b", "bb", Category::Daily, None, None).await.unwrap();
+        mem.store("a", "aa", Category::Daily, None, None)
+            .await
+            .unwrap();
+        mem.store("b", "bb", Category::Daily, None, None)
+            .await
+            .unwrap();
         assert_eq!(mem.count().await.unwrap(), 2);
     }
 
     #[tokio::test]
     async fn test_upsert() {
         let mem = make_mem();
-        mem.store("k", "v1", Category::Daily, None, None).await.unwrap();
-        mem.store("k", "v2", Category::Core, None, Some("t1")).await.unwrap();
+        mem.store("k", "v1", Category::Daily, None, None)
+            .await
+            .unwrap();
+        mem.store("k", "v2", Category::Core, None, Some("t1"))
+            .await
+            .unwrap();
         let entry = mem.get("k").await.unwrap().unwrap();
         assert_eq!(entry.content, "v2");
         assert_eq!(entry.category, Category::Core);
@@ -874,7 +883,10 @@ mod tests {
             .await
             .unwrap();
 
-        let results = mem.recall("fox", 10, None, RecallScope::Full).await.unwrap();
+        let results = mem
+            .recall("fox", 10, None, RecallScope::Full)
+            .await
+            .unwrap();
         assert!(!results.is_empty());
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
         assert!(keys.contains(&"doc1") || keys.contains(&"doc3"));
@@ -886,7 +898,10 @@ mod tests {
         mem.store("k1", "core content", Category::Core, None, None)
             .await
             .unwrap();
-        let results = mem.recall("content", 10, None, RecallScope::Clean).await.unwrap();
+        let results = mem
+            .recall("content", 10, None, RecallScope::Clean)
+            .await
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -896,11 +911,20 @@ mod tests {
         mem.store("core1", "core fact about fox", Category::Core, None, None)
             .await
             .unwrap();
-        mem.store("conv1", "conversation about fox", Category::Conversation, Some("s1"), Some("t1"))
+        mem.store(
+            "conv1",
+            "conversation about fox",
+            Category::Conversation,
+            Some("s1"),
+            Some("t1"),
+        )
+        .await
+        .unwrap();
+
+        let results = mem
+            .recall("fox", 10, None, RecallScope::FactsOnly)
             .await
             .unwrap();
-
-        let results = mem.recall("fox", 10, None, RecallScope::FactsOnly).await.unwrap();
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
         assert!(keys.contains(&"core1"));
         assert!(!keys.contains(&"conv1"));
@@ -909,12 +933,24 @@ mod tests {
     #[tokio::test]
     async fn test_recall_current_topic_filters_conversation() {
         let mem = make_mem();
-        mem.store("conv-rust", "rust topic fox", Category::Conversation, Some("s1"), Some("topic-rust"))
-            .await
-            .unwrap();
-        mem.store("conv-poem", "poem topic fox", Category::Conversation, Some("s1"), Some("topic-poem"))
-            .await
-            .unwrap();
+        mem.store(
+            "conv-rust",
+            "rust topic fox",
+            Category::Conversation,
+            Some("s1"),
+            Some("topic-rust"),
+        )
+        .await
+        .unwrap();
+        mem.store(
+            "conv-poem",
+            "poem topic fox",
+            Category::Conversation,
+            Some("s1"),
+            Some("topic-poem"),
+        )
+        .await
+        .unwrap();
         // Core entries are stored with the same session so the session-scoped FTS
         // query can find them; scope_matches_entry then passes them unconditionally
         // (Category::Core is not topic-filtered in CurrentTopic scope).
@@ -922,11 +958,19 @@ mod tests {
             .await
             .unwrap();
 
-        let scope = RecallScope::CurrentTopic { topic_id: "topic-rust".to_string() };
+        let scope = RecallScope::CurrentTopic {
+            topic_id: "topic-rust".to_string(),
+        };
         let results = mem.recall("fox", 10, Some("s1"), scope).await.unwrap();
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
-        assert!(keys.contains(&"conv-rust"), "rust topic conversation should be included");
-        assert!(!keys.contains(&"conv-poem"), "poem topic conversation should be excluded");
+        assert!(
+            keys.contains(&"conv-rust"),
+            "rust topic conversation should be included"
+        );
+        assert!(
+            !keys.contains(&"conv-poem"),
+            "poem topic conversation should be excluded"
+        );
         assert!(keys.contains(&"core1"), "core entries always included");
     }
 
@@ -936,7 +980,10 @@ mod tests {
         mem.store("k1", "abc123def", Category::Daily, None, None)
             .await
             .unwrap();
-        let results = mem.recall("abc123", 10, None, RecallScope::Full).await.unwrap();
+        let results = mem
+            .recall("abc123", 10, None, RecallScope::Full)
+            .await
+            .unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].key, "k1");
     }
@@ -944,15 +991,34 @@ mod tests {
     #[tokio::test]
     async fn test_session_isolation() {
         let mem = make_mem();
-        mem.store("s1k1", "session one data", Category::Conversation, Some("s1"), None)
-            .await
-            .unwrap();
-        mem.store("s2k1", "session two data", Category::Conversation, Some("s2"), None)
-            .await
-            .unwrap();
+        mem.store(
+            "s1k1",
+            "session one data",
+            Category::Conversation,
+            Some("s1"),
+            None,
+        )
+        .await
+        .unwrap();
+        mem.store(
+            "s2k1",
+            "session two data",
+            Category::Conversation,
+            Some("s2"),
+            None,
+        )
+        .await
+        .unwrap();
 
-        let s1_results = mem.recall("data", 10, Some("s1"), RecallScope::Full).await.unwrap();
-        assert!(s1_results.iter().all(|e| e.session.as_deref() == Some("s1")));
+        let s1_results = mem
+            .recall("data", 10, Some("s1"), RecallScope::Full)
+            .await
+            .unwrap();
+        assert!(
+            s1_results
+                .iter()
+                .all(|e| e.session.as_deref() == Some("s1"))
+        );
     }
 
     #[tokio::test]

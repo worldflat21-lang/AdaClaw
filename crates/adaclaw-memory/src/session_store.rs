@@ -25,8 +25,8 @@
 //! CREATE INDEX idx_sessions_session_id ON sessions(session_id, id);
 //! ```
 
-use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection};
+use anyhow::{Result, anyhow};
+use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
 
 // ── SessionEntry ──────────────────────────────────────────────────────────────
@@ -238,7 +238,10 @@ mod tests {
     #[tokio::test]
     async fn test_session_isolation() {
         let store = make_store().await;
-        store.append("alice", "user", "alice message").await.unwrap();
+        store
+            .append("alice", "user", "alice message")
+            .await
+            .unwrap();
         store.append("bob", "user", "bob message").await.unwrap();
 
         let alice = store.load("alice", 10).await.unwrap();
@@ -273,10 +276,17 @@ mod tests {
         store.append("s", "assistant", "reply 1").await.unwrap();
         store.append("s", "user", "msg 2").await.unwrap();
 
-        store.compact("s", "Summary of conversation so far.").await.unwrap();
+        store
+            .compact("s", "Summary of conversation so far.")
+            .await
+            .unwrap();
 
         let entries = store.load("s", 10).await.unwrap();
-        assert_eq!(entries.len(), 1, "compact should leave exactly one summary entry");
+        assert_eq!(
+            entries.len(),
+            1,
+            "compact should leave exactly one summary entry"
+        );
         assert_eq!(entries[0].role, "system");
         assert_eq!(entries[0].content, "Summary of conversation so far.");
     }

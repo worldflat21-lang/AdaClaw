@@ -238,8 +238,26 @@ mod tests {
         let path = dir.path().join("trace.jsonl");
         let tracer = RuntimeTracer::new(&path, 100);
 
-        tracer.record_simple("tool_call", Some("assistant"), None, None, None, Some(true), Some("shell ls"), None);
-        tracer.record_simple("llm_request", Some("assistant"), None, Some("openai"), Some("gpt-4o"), Some(true), None, Some(250));
+        tracer.record_simple(
+            "tool_call",
+            Some("assistant"),
+            None,
+            None,
+            None,
+            Some(true),
+            Some("shell ls"),
+            None,
+        );
+        tracer.record_simple(
+            "llm_request",
+            Some("assistant"),
+            None,
+            Some("openai"),
+            Some("gpt-4o"),
+            Some(true),
+            None,
+            Some(250),
+        );
 
         let events = tracer.load_events(10);
         assert_eq!(events.len(), 2);
@@ -256,20 +274,33 @@ mod tests {
 
         for i in 0..6 {
             tracer.record_simple(
-                "heartbeat", None, None, None, None, None,
-                Some(&format!("tick-{i}")), None,
+                "heartbeat",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&format!("tick-{i}")),
+                None,
             );
         }
 
         let events = tracer.load_events(100);
-        assert_eq!(events.len(), 3, "rolling should keep last 3 entries, got: {}", events.len());
+        assert_eq!(
+            events.len(),
+            3,
+            "rolling should keep last 3 entries, got: {}",
+            events.len()
+        );
     }
 
     #[test]
     fn load_nonexistent_path_returns_empty() {
         let events = load_events_from_path(
             std::path::Path::new("/nonexistent/path/trace.jsonl"),
-            100, None, None,
+            100,
+            None,
+            None,
         );
         assert!(events.is_empty());
     }

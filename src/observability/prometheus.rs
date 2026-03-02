@@ -162,13 +162,17 @@ impl Default for PrometheusObserver {
 impl Observer for PrometheusObserver {
     fn record_event(&self, event: &ObserverEvent) {
         match event {
-            ObserverEvent::AgentTurn { agent_id, provider, model } => {
-                let key = format!(
-                    r#"agent_id="{agent_id}",provider="{provider}",model="{model}""#
-                );
+            ObserverEvent::AgentTurn {
+                agent_id,
+                provider,
+                model,
+            } => {
+                let key = format!(r#"agent_id="{agent_id}",provider="{provider}",model="{model}""#);
                 self.agent_turns.inc(&key);
             }
-            ObserverEvent::AgentTurnEnd { agent_id, success, .. } => {
+            ObserverEvent::AgentTurnEnd {
+                agent_id, success, ..
+            } => {
                 if !success {
                     let key = format!(r#"agent_id="{agent_id}""#);
                     self.agent_turn_errors.inc(&key);
@@ -181,7 +185,14 @@ impl Observer for PrometheusObserver {
             ObserverEvent::LlmRequest { .. } => {
                 // Counted on response instead, to avoid double-counting.
             }
-            ObserverEvent::LlmResponse { provider, model, success, input_tokens, output_tokens, .. } => {
+            ObserverEvent::LlmResponse {
+                provider,
+                model,
+                success,
+                input_tokens,
+                output_tokens,
+                ..
+            } => {
                 let key = format!(r#"provider="{provider}",model="{model}",success="{success}""#);
                 self.llm_requests.inc(&key);
                 let tk_key = format!(r#"provider="{provider}",model="{model}""#);
@@ -267,7 +278,10 @@ mod tests {
         obs.record_event(&ObserverEvent::HeartbeatTick);
         obs.record_event(&ObserverEvent::HeartbeatTick);
         let out = obs.encode();
-        assert!(out.contains("adaclaw_heartbeat_ticks_total 3"), "output: {out}");
+        assert!(
+            out.contains("adaclaw_heartbeat_ticks_total 3"),
+            "output: {out}"
+        );
     }
 
     #[test]

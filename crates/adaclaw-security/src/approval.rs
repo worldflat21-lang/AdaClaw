@@ -412,12 +412,7 @@ impl ApprovalManager {
                 if !in_always_ask {
                     // 2a. One-time "allow all" bypass token
                     if self.consume_non_cli_allow_all_once() {
-                        self.record_decision_str(
-                            tool_name,
-                            args_preview,
-                            true,
-                            "allow_all_once",
-                        );
+                        self.record_decision_str(tool_name, args_preview, true, "allow_all_once");
                         return ApprovalDecision::Approved;
                     }
 
@@ -439,12 +434,7 @@ impl ApprovalManager {
                         .unwrap()
                         .contains(tool_name)
                     {
-                        self.record_decision_str(
-                            tool_name,
-                            args_preview,
-                            true,
-                            "non_cli_session",
-                        );
+                        self.record_decision_str(tool_name, args_preview, true, "non_cli_session");
                         return ApprovalDecision::Approved;
                     }
                 }
@@ -544,9 +534,7 @@ impl ApprovalManager {
             }
             Err(e) => {
                 warn!("Failed to read approval input: {}", e);
-                ApprovalDecision::Denied(
-                    "Failed to read approval input from stdin.".to_string(),
-                )
+                ApprovalDecision::Denied("Failed to read approval input from stdin.".to_string())
             }
         }
     }
@@ -790,9 +778,8 @@ impl ApprovalManager {
         let mut rows: Vec<PendingApprovalRequest> = pending
             .values()
             .filter(|req| {
-                requested_by.map_or(true, |by| req.requested_by == by)
-                    && requested_channel
-                        .map_or(true, |ch| req.requested_channel == ch)
+                requested_by.is_none_or(|by| req.requested_by == by)
+                    && requested_channel.is_none_or(|ch| req.requested_channel == ch)
             })
             .cloned()
             .collect();
@@ -1059,7 +1046,11 @@ mod tests {
         // The remaining token count depends on implementation ordering.
         // In our impl, always_ask is checked FIRST (step 1), then auto_approve (still step 1),
         // then we check "if !in_always_ask" before the token. So token is NOT consumed.
-        assert_eq!(mgr.non_cli_allow_all_once_remaining(), 1, "token preserved since always_ask blocked early");
+        assert_eq!(
+            mgr.non_cli_allow_all_once_remaining(),
+            1,
+            "token preserved since always_ask blocked early"
+        );
     }
 
     // ── Runtime auto_approve policy ───────────────────────────────────────────
@@ -1159,10 +1150,8 @@ mod tests {
     #[test]
     fn pending_request_dedup_returns_same_request() {
         let mgr = ApprovalManager::new(AutonomyLevel::Supervised, false);
-        let req1 =
-            mgr.create_pending_request("shell", "ls", "alice", "telegram", "chat-1");
-        let req2 =
-            mgr.create_pending_request("shell", "ls", "alice", "telegram", "chat-1");
+        let req1 = mgr.create_pending_request("shell", "ls", "alice", "telegram", "chat-1");
+        let req2 = mgr.create_pending_request("shell", "ls", "alice", "telegram", "chat-1");
         // Should be same request ID (dedup)
         assert_eq!(req1.request_id, req2.request_id);
     }
@@ -1213,7 +1202,10 @@ mod tests {
         let d = mgr.approve_tool_supervised("shell", "ls -la", "alice", "telegram", "chat-1");
         assert!(!d.is_approved());
         let reason = d.denial_reason().unwrap();
-        assert!(reason.contains("apr-"), "denial message should include request ID");
+        assert!(
+            reason.contains("apr-"),
+            "denial message should include request ID"
+        );
         // A pending request should have been created
         let pending = mgr.list_pending_requests(Some("alice"), Some("telegram"));
         assert_eq!(pending.len(), 1);

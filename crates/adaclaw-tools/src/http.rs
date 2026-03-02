@@ -1,5 +1,5 @@
 use adaclaw_core::tool::{Tool, ToolResult, ToolSpec};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::{Client, Method};
 use serde_json::Value;
@@ -95,7 +95,10 @@ impl Tool for HttpRequestTool {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Only http:// and https:// URLs are allowed, got: {}", url)),
+                error: Some(format!(
+                    "Only http:// and https:// URLs are allowed, got: {}",
+                    url
+                )),
             });
         }
 
@@ -112,8 +115,7 @@ impl Tool for HttpRequestTool {
         }
 
         let method_str = args["method"].as_str().unwrap_or("GET").to_uppercase();
-        let method = Method::from_str(&method_str)
-            .unwrap_or(Method::GET);
+        let method = Method::from_str(&method_str).unwrap_or(Method::GET);
 
         let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(30);
 

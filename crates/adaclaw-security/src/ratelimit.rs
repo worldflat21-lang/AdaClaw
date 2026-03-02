@@ -177,11 +177,9 @@ impl RateLimiter {
         // ── Per-channel limit ─────────────────────────────────────────────────
         if self.config.per_channel > 0 {
             let mut map = self.channel_counters.lock().unwrap();
-            let counter = map
-                .entry(channel.to_string())
-                .or_insert_with(|| {
-                    WindowCounter::new(Duration::minutes(1), self.config.per_channel)
-                });
+            let counter = map.entry(channel.to_string()).or_insert_with(|| {
+                WindowCounter::new(Duration::minutes(1), self.config.per_channel)
+            });
 
             if !counter.try_record() {
                 let msg = format!(

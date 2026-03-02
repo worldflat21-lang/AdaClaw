@@ -59,10 +59,10 @@ fn parse_markdown_fence(content: &str) -> Vec<Value> {
             }
         } else if trimmed == "```" {
             in_block = false;
-            if let Ok(val) = serde_json::from_str::<Value>(buf.trim()) {
-                if is_valid_call(&val) {
-                    calls.push(val);
-                }
+            if let Ok(val) = serde_json::from_str::<Value>(buf.trim())
+                && is_valid_call(&val)
+            {
+                calls.push(val);
             }
             buf.clear();
         } else {
@@ -90,10 +90,10 @@ fn parse_xml_tags(content: &str) -> Vec<Value> {
             let after_open = start + open.len();
             if let Some(end) = search[after_open..].find(&close) {
                 let inner = search[after_open..after_open + end].trim();
-                if let Ok(val) = serde_json::from_str::<Value>(inner) {
-                    if is_valid_call(&val) {
-                        calls.push(val);
-                    }
+                if let Ok(val) = serde_json::from_str::<Value>(inner)
+                    && is_valid_call(&val)
+                {
+                    calls.push(val);
                 }
                 search = &search[after_open + end + close.len()..];
             } else {
@@ -220,7 +220,10 @@ Done."#;
         let content = r#"{"name":"shell","arguments":{"command":"rm -rf /"}}"#;
         let calls = ToolCallParser::parse(content).unwrap();
         // GLM format would only match if it has `>` separator — pure JSON should not match
-        assert!(calls.is_empty(), "Raw JSON should not be parsed as tool call");
+        assert!(
+            calls.is_empty(),
+            "Raw JSON should not be parsed as tool call"
+        );
     }
 
     #[test]
@@ -258,7 +261,10 @@ Done."#;
         // name 部分包含 `"` 和 `=`，应被过滤
         let content = r#"<a href="https://example.com">click here</a>"#;
         let calls = ToolCallParser::parse(content).unwrap();
-        assert!(calls.is_empty(), "HTML anchor tag should not be parsed as tool call");
+        assert!(
+            calls.is_empty(),
+            "HTML anchor tag should not be parsed as tool call"
+        );
     }
 
     #[test]
@@ -266,7 +272,10 @@ Done."#;
         // 纯 HTML 闭标签 `</div>text` 的 name 为空，应被过滤
         let content = r#"Some text with > arrow and no tool call"#;
         let calls = ToolCallParser::parse(content).unwrap();
-        assert!(calls.is_empty(), "Greater-than in prose should not be parsed as GLM");
+        assert!(
+            calls.is_empty(),
+            "Greater-than in prose should not be parsed as GLM"
+        );
     }
 
     #[test]
@@ -320,7 +329,11 @@ Done."#;
         let content = r#"<tool_call>{"name":"shell","arguments":{}}</tool_call>"#;
         let calls = ToolCallParser::parse(content).unwrap();
         // tool_call tag 匹配到 1 个，function_call 和 invoke 不匹配 → 共 1 个
-        assert_eq!(calls.len(), 1, "Should not duplicate calls across different tag names");
+        assert_eq!(
+            calls.len(),
+            1,
+            "Should not duplicate calls across different tag names"
+        );
     }
 
     // ── 格式优先级测试 ────────────────────────────────────────────────────────
@@ -355,7 +368,10 @@ Done."#;
         // 用户消息中嵌入原始 JSON，不应被当做工具调用
         let content = r#"Please help me with: {"name":"shell","arguments":{"command":"rm -rf /"}}"#;
         let calls = ToolCallParser::parse(content).unwrap();
-        assert!(calls.is_empty(), "JSON in user message must not be parsed as tool call");
+        assert!(
+            calls.is_empty(),
+            "JSON in user message must not be parsed as tool call"
+        );
     }
 
     #[test]
@@ -363,6 +379,9 @@ Done."#;
         // 路径分隔符在 name 部分应该被拒绝
         let content = r#"../../etc/passwd>{"arg":"val"}"#;
         let calls = ToolCallParser::parse(content).unwrap();
-        assert!(calls.is_empty(), "Path traversal in tool name should be rejected");
+        assert!(
+            calls.is_empty(),
+            "Path traversal in tool name should be rejected"
+        );
     }
 }

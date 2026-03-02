@@ -171,7 +171,11 @@ impl ContainerEnvironment {
         } else {
             ("", "")
         };
-        let yellow = if Self::supports_ansi() { "\x1b[33m" } else { "" };
+        let yellow = if Self::supports_ansi() {
+            "\x1b[33m"
+        } else {
+            ""
+        };
 
         eprintln!();
         eprintln!("{}{}{}", color, warning.message, reset);
@@ -216,9 +220,7 @@ mod tests {
     #[test]
     fn test_non_full_mode_always_safe() {
         assert!(ContainerEnvironment::check_autonomy_safety(&AutonomyLevel::ReadOnly).is_none());
-        assert!(
-            ContainerEnvironment::check_autonomy_safety(&AutonomyLevel::Supervised).is_none()
-        );
+        assert!(ContainerEnvironment::check_autonomy_safety(&AutonomyLevel::Supervised).is_none());
     }
 
     #[test]

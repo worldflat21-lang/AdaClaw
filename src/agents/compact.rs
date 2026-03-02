@@ -97,7 +97,11 @@ pub async fn rolling_compact(
 
     // Skip if all "old" messages are already a previous summary (avoid re-summarising
     // a summary on every single turn when the history stays at the threshold).
-    if to_summarise.len() == 1 && to_summarise[0].content.starts_with("[Conversation summary]") {
+    if to_summarise.len() == 1
+        && to_summarise[0]
+            .content
+            .starts_with("[Conversation summary]")
+    {
         return Ok(());
     }
 
@@ -290,7 +294,10 @@ mod tests {
             _model: &str,
             _temp: f64,
         ) -> anyhow::Result<String> {
-            Ok("Key facts: user asked about Rust ownership, assistant explained borrowing rules.".to_string())
+            Ok(
+                "Key facts: user asked about Rust ownership, assistant explained borrowing rules."
+                    .to_string(),
+            )
         }
     }
 
@@ -323,7 +330,9 @@ mod tests {
             _model: &str,
             _temp: f64,
         ) -> anyhow::Result<String> {
-            Err(anyhow::anyhow!("LLM service unavailable: connection refused"))
+            Err(anyhow::anyhow!(
+                "LLM service unavailable: connection refused"
+            ))
         }
     }
 
@@ -333,8 +342,14 @@ mod tests {
     async fn test_rolling_compact_noop_when_small() {
         // PanicProvider must NOT be called — history is below ROLLING_THRESHOLD.
         let mut h = make_history(ROLLING_THRESHOLD - 1);
-        rolling_compact(&mut h, &PanicProvider, "any-model").await.unwrap();
-        assert_eq!(h.len(), ROLLING_THRESHOLD - 1, "short history must be unchanged");
+        rolling_compact(&mut h, &PanicProvider, "any-model")
+            .await
+            .unwrap();
+        assert_eq!(
+            h.len(),
+            ROLLING_THRESHOLD - 1,
+            "short history must be unchanged"
+        );
     }
 
     // ── rolling_compact: success path ─────────────────────────────────────────
@@ -350,7 +365,9 @@ mod tests {
         let first_content = h[0].content.clone();
         let last_content = h.last().unwrap().content.clone();
 
-        rolling_compact(&mut h, &SummaryProvider, "gpt-4").await.unwrap();
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4")
+            .await
+            .unwrap();
 
         assert!(
             h.len() < original_len,
@@ -358,7 +375,10 @@ mod tests {
             h.len(),
             original_len
         );
-        assert_eq!(h[0].content, first_content, "first message must be preserved verbatim");
+        assert_eq!(
+            h[0].content, first_content,
+            "first message must be preserved verbatim"
+        );
         assert_eq!(
             h.last().unwrap().content,
             last_content,
@@ -388,11 +408,15 @@ mod tests {
         // so a second immediate call is a no-op (no infinite LLM-call loop).
         let mut h = make_history(ROLLING_THRESHOLD + 5);
 
-        rolling_compact(&mut h, &SummaryProvider, "gpt-4").await.unwrap();
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4")
+            .await
+            .unwrap();
         let after_first = h.len();
 
         // Second call must be a no-op (PanicProvider would panic if called).
-        rolling_compact(&mut h, &PanicProvider, "gpt-4").await.unwrap();
+        rolling_compact(&mut h, &PanicProvider, "gpt-4")
+            .await
+            .unwrap();
 
         assert_eq!(
             h.len(),
@@ -412,21 +436,29 @@ mod tests {
         let last_content = h.last().unwrap().content.clone();
 
         // Should complete without propagating the LLM error
-        rolling_compact(&mut h, &FailProvider, "model").await.unwrap();
+        rolling_compact(&mut h, &FailProvider, "model")
+            .await
+            .unwrap();
 
         // Hard trim was applied — history is within HARD_MAX_HISTORY
         assert!(
             h.len() <= HARD_MAX_HISTORY,
-            "hard trim must be applied after LLM failure; len={}", h.len()
+            "hard trim must be applied after LLM failure; len={}",
+            h.len()
         );
-        assert_eq!(h[0].content, first_content, "first message must survive the fallback trim");
+        assert_eq!(
+            h[0].content, first_content,
+            "first message must survive the fallback trim"
+        );
         assert_eq!(
             h.last().unwrap().content,
             last_content,
             "most recent message must survive the fallback trim"
         );
         // The history must not contain a "[Conversation summary]" entry (LLM failed)
-        let has_summary = h.iter().any(|m| m.content.starts_with("[Conversation summary]"));
+        let has_summary = h
+            .iter()
+            .any(|m| m.content.starts_with("[Conversation summary]"));
         assert!(!has_summary, "no summary must be inserted when LLM fails");
     }
 
@@ -436,8 +468,14 @@ mod tests {
     async fn test_auto_compact_history_noop_below_threshold() {
         let mut h = make_history(ROLLING_THRESHOLD - 1);
         // PanicProvider must not be called
-        auto_compact_history(&mut h, &PanicProvider, "model").await.unwrap();
-        assert_eq!(h.len(), ROLLING_THRESHOLD - 1, "auto_compact must be a no-op when below threshold");
+        auto_compact_history(&mut h, &PanicProvider, "model")
+            .await
+            .unwrap();
+        assert_eq!(
+            h.len(),
+            ROLLING_THRESHOLD - 1,
+            "auto_compact must be a no-op when below threshold"
+        );
     }
 
     #[tokio::test]
@@ -450,11 +488,20 @@ mod tests {
         let first_content = h[0].content.clone();
         let last_content = h.last().unwrap().content.clone();
 
-        auto_compact_history(&mut h, &SummaryProvider, "model").await.unwrap();
+        auto_compact_history(&mut h, &SummaryProvider, "model")
+            .await
+            .unwrap();
 
-        assert!(h.len() <= HARD_MAX_HISTORY, "must be within hard max after auto_compact");
+        assert!(
+            h.len() <= HARD_MAX_HISTORY,
+            "must be within hard max after auto_compact"
+        );
         assert_eq!(h[0].content, first_content, "first message preserved");
-        assert_eq!(h.last().unwrap().content, last_content, "last message preserved");
+        assert_eq!(
+            h.last().unwrap().content,
+            last_content,
+            "last message preserved"
+        );
     }
 
     #[tokio::test]
@@ -462,7 +509,9 @@ mod tests {
         // Even when LLM fails and rolling_compact falls back to trim, auto_compact_history
         // must succeed (Ok) and leave history within HARD_MAX_HISTORY.
         let mut h = make_history(ROLLING_THRESHOLD + 20);
-        auto_compact_history(&mut h, &FailProvider, "model").await.unwrap();
+        auto_compact_history(&mut h, &FailProvider, "model")
+            .await
+            .unwrap();
         assert!(
             h.len() <= HARD_MAX_HISTORY,
             "history must be within hard max even after LLM failure; len={}",
@@ -487,6 +536,10 @@ mod tests {
         let mut h = make_history(HARD_MAX_HISTORY);
         let len_before = h.len();
         trim_history(&mut h);
-        assert_eq!(h.len(), len_before, "trim at exact HARD_MAX_HISTORY must be a no-op");
+        assert_eq!(
+            h.len(),
+            len_before,
+            "trim at exact HARD_MAX_HISTORY must be a no-op"
+        );
     }
 }

@@ -34,7 +34,9 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Embed a single string — convenience wrapper around `embed`.
     async fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
         let mut batch = self.embed(&[text]).await?;
-        batch.pop().ok_or_else(|| anyhow::anyhow!("Embedding returned empty result"))
+        batch
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("Embedding returned empty result"))
     }
 }
 
@@ -87,9 +89,7 @@ pub fn create_embedding_provider(
 /// Convert a `Vec<f32>` to a raw bytes `Vec<u8>` (little-endian f32 blob).
 /// This is the format expected by `sqlite-vec`.
 pub fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 /// Convert raw bytes back to `Vec<f32>` (little-endian).

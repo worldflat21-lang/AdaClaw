@@ -70,8 +70,14 @@ pub fn create_memory_with_config(cfg: &MemoryFactoryConfig<'_>) -> Result<Box<dy
         }
 
         "markdown" => {
-            let effective_path = if cfg.path.is_empty() { "memory" } else { cfg.path };
-            Ok(Box::new(crate::markdown::MarkdownMemory::new(effective_path)?))
+            let effective_path = if cfg.path.is_empty() {
+                "memory"
+            } else {
+                cfg.path
+            };
+            Ok(Box::new(crate::markdown::MarkdownMemory::new(
+                effective_path,
+            )?))
         }
 
         "none" | "" => Ok(Box::new(crate::none::NoneMemory::new())),

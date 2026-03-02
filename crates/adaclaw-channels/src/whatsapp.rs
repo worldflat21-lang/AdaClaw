@@ -32,17 +32,17 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::{
+    Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
-    Router,
 };
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -268,8 +268,8 @@ impl WhatsAppChannel {
         allow_from: Vec<String>,
         extra: &HashMap<String, String>,
     ) -> Result<Self> {
-        let access_token = token
-            .ok_or_else(|| anyhow!("channels.whatsapp.token (access_token) is required"))?;
+        let access_token =
+            token.ok_or_else(|| anyhow!("channels.whatsapp.token (access_token) is required"))?;
         let phone_number_id = extra
             .get("phone_number_id")
             .cloned()
@@ -416,7 +416,10 @@ pub async fn handle_whatsapp_message(
 ) -> StatusCode {
     // HMAC 签名验证
     if !state.verify_signature(&headers, &body) {
-        warn!(channel = "whatsapp", "X-Hub-Signature-256 verification failed");
+        warn!(
+            channel = "whatsapp",
+            "X-Hub-Signature-256 verification failed"
+        );
         return StatusCode::FORBIDDEN;
     }
 
@@ -460,10 +463,10 @@ pub async fn handle_whatsapp_message(
             let mut contact_names: HashMap<String, String> = HashMap::new();
             if let Some(contacts) = &value.contacts {
                 for c in contacts {
-                    if let (Some(wa_id), Some(profile)) = (&c.wa_id, &c.profile) {
-                        if let Some(name) = &profile.name {
-                            contact_names.insert(wa_id.clone(), name.clone());
-                        }
+                    if let (Some(wa_id), Some(profile)) = (&c.wa_id, &c.profile)
+                        && let Some(name) = &profile.name
+                    {
+                        contact_names.insert(wa_id.clone(), name.clone());
                     }
                 }
             }

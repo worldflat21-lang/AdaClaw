@@ -21,13 +21,13 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::post,
-    Json, Router,
 };
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -106,9 +106,7 @@ impl DingTalkChannel {
         webhook_port: u16,
         webhook_path: String,
     ) -> Self {
-        let base = Arc::new(
-            BaseChannel::new("dingtalk").with_allow_from(allow_from),
-        );
+        let base = Arc::new(BaseChannel::new("dingtalk").with_allow_from(allow_from));
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -128,11 +126,7 @@ impl DingTalkChannel {
     ///
     /// sign = base64(HMAC-SHA256(timestamp + "\n" + secret, secret))
     #[allow(dead_code)]
-    fn verify_signature(
-        &self,
-        timestamp: &str,
-        sign: &str,
-    ) -> bool {
+    fn verify_signature(&self, timestamp: &str, sign: &str) -> bool {
         let secret = match &self.webhook_secret {
             Some(s) => s,
             None => return true, // 未配置密钥，跳过验证
@@ -189,7 +183,9 @@ impl Channel for DingTalkChannel {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
-            .with_graceful_shutdown(async { rx.await.ok(); })
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            })
             .await
             .map_err(|e| anyhow!("DingTalk HTTP server error: {}", e))?;
 
@@ -228,11 +224,7 @@ impl Channel for DingTalkChannel {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "DingTalk reply failed: HTTP {} — {}",
-                status,
-                body
-            ));
+            return Err(anyhow!("DingTalk reply failed: HTTP {} — {}", status, body));
         }
 
         debug!(channel = "dingtalk", "Reply sent successfully");
@@ -329,7 +321,14 @@ async fn handle_dingtalk_webhook(
 
     state
         .base
-        .handle_message(&state.bus, &sender_id, &sender_name, &session_id, &content, metadata)
+        .handle_message(
+            &state.bus,
+            &sender_id,
+            &sender_name,
+            &session_id,
+            &content,
+            metadata,
+        )
         .await;
 
     StatusCode::OK

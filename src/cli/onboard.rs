@@ -253,7 +253,9 @@ fn build_config_toml(
     out.push_str(&format!("autonomy_level = \"{}\"\n", autonomy));
     out.push_str("workspace = \"./workspace\"\n");
     if autonomy == "full" {
-        out.push_str("# allow_full_outside_container = true  # uncomment to suppress container warning\n");
+        out.push_str(
+            "# allow_full_outside_container = true  # uncomment to suppress container warning\n",
+        );
     }
     out.push('\n');
 

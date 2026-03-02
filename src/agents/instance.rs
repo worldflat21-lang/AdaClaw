@@ -174,11 +174,7 @@ impl AgentInstance {
     ///
     /// 优先使用 `config.workspace`（支持 `~` 展开），否则默认 `~/.adaclaw/workspace-{agent_id}`。
     /// 目录不存在时自动创建（含所有父目录）。
-    pub fn new(
-        agent_id: &str,
-        config: &AgentConfig,
-        provider: Arc<dyn Provider>,
-    ) -> Result<Self> {
+    pub fn new(agent_id: &str, config: &AgentConfig, provider: Arc<dyn Provider>) -> Result<Self> {
         // ── 1. 构建预过滤工具注册表（仅用于检查，执行时重建） ────────────────
         // memory 此时尚未创建，用 None 构建检查用注册表（不涉及实际执行）
         let all = adaclaw_tools::registry::all_tools(None);
@@ -186,7 +182,9 @@ impl AgentInstance {
             all
         } else {
             let whitelist: HashSet<&str> = config.tools.iter().map(|s| s.as_str()).collect();
-            all.into_iter().filter(|t| whitelist.contains(t.name())).collect()
+            all.into_iter()
+                .filter(|t| whitelist.contains(t.name()))
+                .collect()
         };
         let tool_registry = ToolRegistry::new(filtered);
 
@@ -233,7 +231,9 @@ impl AgentInstance {
             return all;
         }
         let allowed: HashSet<&str> = self.allowed_tools.iter().map(|s| s.as_str()).collect();
-        all.into_iter().filter(|t| allowed.contains(t.name())).collect()
+        all.into_iter()
+            .filter(|t| allowed.contains(t.name()))
+            .collect()
     }
 
     /// 附加记忆后端（builder 风格，供 daemon 在构建后注入）。
@@ -354,14 +354,20 @@ mod tests {
     fn test_default_workspace_different_agents() {
         let ws1 = default_workspace("assistant");
         let ws2 = default_workspace("coder");
-        assert_ne!(ws1, ws2, "Different agents should have different workspaces");
+        assert_ne!(
+            ws1, ws2,
+            "Different agents should have different workspaces"
+        );
     }
 
     #[test]
     fn test_expand_tilde() {
         let expanded = expand_tilde("~/projects");
         assert!(!expanded.starts_with('~'), "Tilde should be expanded");
-        assert!(expanded.ends_with("/projects"), "Path suffix should be preserved");
+        assert!(
+            expanded.ends_with("/projects"),
+            "Path suffix should be preserved"
+        );
     }
 
     #[test]

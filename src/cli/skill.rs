@@ -11,7 +11,7 @@
 //! - 检测 script 注入模式（如 `<script>`, `eval(`, `exec(` 等）
 //! - 技能名称只允许 `[a-z0-9_-]`
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -37,8 +37,7 @@ const INJECTION_PATTERNS: &[&str] = &[
 
 /// 获取技能目录（workspace/skills/，不存在时自动创建）
 pub fn get_skills_dir() -> PathBuf {
-    let workspace = std::env::var("ADACLAW_WORKSPACE")
-        .unwrap_or_else(|_| "workspace".to_string());
+    let workspace = std::env::var("ADACLAW_WORKSPACE").unwrap_or_else(|_| "workspace".to_string());
     PathBuf::from(&workspace).join("skills")
 }
 
@@ -49,7 +48,10 @@ pub fn cmd_list() {
     let skills_dir = get_skills_dir();
 
     if !skills_dir.exists() {
-        println!("No skills installed. Skills directory: {}", skills_dir.display());
+        println!(
+            "No skills installed. Skills directory: {}",
+            skills_dir.display()
+        );
         println!("Install a skill with: adaclaw skill install <url-or-name>");
         return;
     }
@@ -89,26 +91,25 @@ pub fn cmd_list() {
 
 fn read_skill_meta(dir: &Path) -> (String, String) {
     let toml_path = dir.join("SKILL.toml");
-    if toml_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&toml_path) {
-            if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-                let version = val
-                    .get("skill")
-                    .and_then(|s| s.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0.1.0")
-                    .to_string();
-                let description = val
-                    .get("skill")
-                    .and_then(|s| s.get("description"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .chars()
-                    .take(40)
-                    .collect::<String>();
-                return (version, description);
-            }
-        }
+    if toml_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&toml_path)
+        && let Ok(val) = toml::from_str::<toml::Value>(&content)
+    {
+        let version = val
+            .get("skill")
+            .and_then(|s| s.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("0.1.0")
+            .to_string();
+        let description = val
+            .get("skill")
+            .and_then(|s| s.get("description"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(40)
+            .collect::<String>();
+        return (version, description);
     }
     // fallback: read first line of SKILL.md
     let md_path = dir.join("SKILL.md");
@@ -136,8 +137,7 @@ fn read_skill_meta(dir: &Path) -> (String, String) {
 /// 安装技能（支持 URL 或 `clawhub:<name>` 短前缀）
 pub async fn cmd_install(source: &str) -> Result<()> {
     let skills_dir = get_skills_dir();
-    std::fs::create_dir_all(&skills_dir)
-        .context("Failed to create skills directory")?;
+    std::fs::create_dir_all(&skills_dir).context("Failed to create skills directory")?;
 
     // 解析来源
     let (skill_name, url) = if let Some(name) = source.strip_prefix("clawhub:") {
@@ -207,10 +207,7 @@ pub async fn cmd_install(source: &str) -> Result<()> {
         ));
     }
 
-    let content = resp
-        .text()
-        .await
-        .context("Failed to read skill content")?;
+    let content = resp.text().await.context("Failed to read skill content")?;
 
     // 安全审计
     let issues = audit_content(&skill_name, &content);
@@ -259,8 +256,7 @@ fn install_from_local_path(src: &str, skills_dir: &Path) -> Result<()> {
     }
 
     // Copy the directory
-    copy_dir(&src_path, &dest)
-        .with_context(|| format!("Failed to copy skill from {}", src))?;
+    copy_dir(&src_path, &dest).with_context(|| format!("Failed to copy skill from {}", src))?;
 
     println!("✅ Skill '{}' installed from local path.", name);
     Ok(())
@@ -356,17 +352,14 @@ pub fn cmd_audit(name: &str) -> Result<()> {
                 ));
                 continue;
             }
-            if path.is_file() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let file_issues = audit_content(
-                        &path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                        &content,
-                    );
-                    all_issues.extend(file_issues);
-                }
+            if path.is_file()
+                && let Ok(content) = std::fs::read_to_string(&path)
+            {
+                let file_issues = audit_content(
+                    &path.file_name().unwrap_or_default().to_string_lossy(),
+                    &content,
+                );
+                all_issues.extend(file_issues);
             }
         }
     }
@@ -374,7 +367,11 @@ pub fn cmd_audit(name: &str) -> Result<()> {
     if all_issues.is_empty() {
         println!("✅ Skill '{}' passed security audit.", name);
     } else {
-        println!("⚠️  Skill '{}' has {} security issue(s):", name, all_issues.len());
+        println!(
+            "⚠️  Skill '{}' has {} security issue(s):",
+            name,
+            all_issues.len()
+        );
         for issue in &all_issues {
             println!("   - {}", issue);
         }

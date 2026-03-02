@@ -9,4 +9,4 @@
 
 pub mod loader;
 
-pub use loader::{load_identity, Identity};
+pub use loader::{Identity, load_identity};

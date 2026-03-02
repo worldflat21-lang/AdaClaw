@@ -25,8 +25,8 @@
 //! # }
 //! ```
 
+use anyhow::{Result, anyhow};
 use std::net::{IpAddr, Ipv4Addr};
-use anyhow::{anyhow, Result};
 
 // ── IP 分类 ───────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
                 || v4.is_link_local()  // 169.254.0.0/16 (incl. metadata endpoint)
                 || is_cgnat_v4(v4)     // 100.64.0.0/10
                 || v4.is_unspecified() // 0.0.0.0
-                || v4.is_broadcast()   // 255.255.255.255
+                || v4.is_broadcast() // 255.255.255.255
         }
         IpAddr::V6(v6) => {
             v6.is_loopback()       // ::1
@@ -76,7 +76,7 @@ fn extract_host_port(url: &str) -> Option<(String, u16)> {
     };
 
     // The authority part is everything before the first `/`, `?`, or `#`.
-    let authority = rest.split(|c| c == '/' || c == '?' || c == '#').next()?;
+    let authority = rest.split(['/', '?', '#']).next()?;
 
     // Handle IPv6 literal addresses: [::1]:8080
     if authority.starts_with('[') {
@@ -225,7 +225,9 @@ mod tests {
     #[test]
     fn test_public_ipv6_allowed() {
         // 2606:2800:21f:cb07:6820:80da:af6b:8b2c (example.com)
-        assert!(!is_blocked_ip("2606:2800:21f:cb07:6820:80da:af6b:8b2c".parse().unwrap()));
+        assert!(!is_blocked_ip(
+            "2606:2800:21f:cb07:6820:80da:af6b:8b2c".parse().unwrap()
+        ));
     }
 
     #[test]
@@ -287,7 +289,11 @@ mod tests {
     #[tokio::test]
     async fn test_check_ssrf_blocks_metadata_endpoint() {
         // AWS metadata / GCP metadata endpoint
-        assert!(check_ssrf_url("http://169.254.169.254/latest/meta-data/").await.is_err());
+        assert!(
+            check_ssrf_url("http://169.254.169.254/latest/meta-data/")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

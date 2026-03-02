@@ -12,7 +12,7 @@
 //! to a temp file and passes it via `--config`, avoiding the need for the
 //! user to pre-authenticate the CLI manually.
 
-use super::{spawn_process, TunnelHandle};
+use super::{TunnelHandle, spawn_process};
 use std::process::Command;
 use tracing::info;
 
@@ -23,10 +23,7 @@ use tracing::info;
 pub fn start(port: u16, auth_token: Option<&str>, domain: Option<&str>) -> Option<TunnelHandle> {
     info!(port, domain = ?domain, "Starting ngrok tunnel");
 
-    let mut args = vec![
-        "http".to_string(),
-        port.to_string(),
-    ];
+    let mut args = vec!["http".to_string(), port.to_string()];
 
     if let Some(d) = domain {
         args.push("--domain".to_string());
@@ -35,9 +32,7 @@ pub fn start(port: u16, auth_token: Option<&str>, domain: Option<&str>) -> Optio
 
     // If auth token is provided, write a minimal temp config
     let _temp_config = if let Some(token) = auth_token {
-        let config_content = format!(
-            "version: \"2\"\nauthtoken: {token}\n"
-        );
+        let config_content = format!("version: \"2\"\nauthtoken: {token}\n");
         let temp_path = std::env::temp_dir().join("adaclaw-ngrok.yml");
         if std::fs::write(&temp_path, &config_content).is_ok() {
             args.push("--config".to_string());

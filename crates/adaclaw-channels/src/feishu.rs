@@ -24,19 +24,14 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::post,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tracing::{debug, info, warn};
 
 // ── 飞书事件结构（schema 2.0）──────────────────────────────────────────────────
@@ -134,11 +129,7 @@ impl FeishuState {
             .map_err(|e| anyhow!("Feishu token response parse failed: {}", e))?;
 
         if body.code != 0 {
-            return Err(anyhow!(
-                "Feishu token error {}: {}",
-                body.code,
-                body.msg
-            ));
+            return Err(anyhow!("Feishu token error {}: {}", body.code, body.msg));
         }
 
         let token = body
@@ -166,8 +157,7 @@ impl FeishuState {
         let token = self.get_access_token().await?;
 
         // 飞书消息内容需要 JSON 字符串化
-        let msg_content = serde_json::to_string(&json!({ "text": content }))
-            .unwrap_or_default();
+        let msg_content = serde_json::to_string(&json!({ "text": content })).unwrap_or_default();
 
         let url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id";
         let resp = self
@@ -229,9 +219,7 @@ impl FeishuChannel {
         webhook_port: u16,
         webhook_path: String,
     ) -> Self {
-        let base = Arc::new(
-            BaseChannel::new("feishu").with_allow_from(allow_from),
-        );
+        let base = Arc::new(BaseChannel::new("feishu").with_allow_from(allow_from));
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
@@ -294,7 +282,9 @@ impl Channel for FeishuChannel {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
-            .with_graceful_shutdown(async { rx.await.ok(); })
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            })
             .await
             .map_err(|e| anyhow!("Feishu HTTP server error: {}", e))?;
 
@@ -339,27 +329,19 @@ async fn handle_feishu_event(
     Json(body): Json<FeishuEvent>,
 ) -> (StatusCode, Json<Value>) {
     // ── URL 验证（旧格式）──────────────────────────────────────────────────────
-    if body.event_type_legacy.as_deref() == Some("url_verification") {
-        if let Some(challenge) = &body.challenge {
-            return (
-                StatusCode::OK,
-                Json(json!({ "challenge": challenge })),
-            );
-        }
+    if body.event_type_legacy.as_deref() == Some("url_verification")
+        && let Some(challenge) = &body.challenge
+    {
+        return (StatusCode::OK, Json(json!({ "challenge": challenge })));
     }
 
     // ── URL 验证（schema 2.0）─────────────────────────────────────────────────
-    if let Some(header) = &body.header {
-        if header.event_type.as_deref() == Some("url_verification") {
-            if let Some(event) = &body.event {
-                if let Some(challenge) = event.get("challenge").and_then(|v| v.as_str()) {
-                    return (
-                        StatusCode::OK,
-                        Json(json!({ "challenge": challenge })),
-                    );
-                }
-            }
-        }
+    if let Some(header) = &body.header
+        && header.event_type.as_deref() == Some("url_verification")
+        && let Some(event) = &body.event
+        && let Some(challenge) = event.get("challenge").and_then(|v| v.as_str())
+    {
+        return (StatusCode::OK, Json(json!({ "challenge": challenge })));
     }
 
     // ── Token 验证 ─────────────────────────────────────────────────────────────
@@ -428,7 +410,8 @@ async fn handle_feishu_event(
             .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or("{}");
-        let content_json: serde_json::Value = serde_json::from_str(content_str).unwrap_or(json!({}));
+        let content_json: serde_json::Value =
+            serde_json::from_str(content_str).unwrap_or(json!({}));
         let t = content_json
             .get("text")
             .and_then(|v| v.as_str())
@@ -516,7 +499,9 @@ async fn handle_feishu_event(
     // session_id = chat_id（send() 方法用此值调用 Feishu API）
     state
         .base
-        .handle_message(&state.bus, &sender_id, &sender_id, &chat_id, &text, metadata)
+        .handle_message(
+            &state.bus, &sender_id, &sender_id, &chat_id, &text, metadata,
+        )
         .await;
 
     (StatusCode::OK, Json(json!({})))

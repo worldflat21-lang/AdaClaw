@@ -57,7 +57,6 @@ pub struct OpenAiCompatDef {
 /// All OpenAI-compatible providers.  Order controls alias-match priority.
 pub static COMPAT_DEFS: &[OpenAiCompatDef] = &[
     // ── International ───────────────────────────────────────────────────────
-
     OpenAiCompatDef {
         name: "deepseek",
         aliases: &["deepseek-chat", "deepseek-reasoner", "ds"],
@@ -94,7 +93,12 @@ pub static COMPAT_DEFS: &[OpenAiCompatDef] = &[
     OpenAiCompatDef {
         name: "gemini",
         // Google exposes Gemini through an OpenAI-compatible endpoint.
-        aliases: &["gemini", "gemini-2.0-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
+        aliases: &[
+            "gemini",
+            "gemini-2.0-flash",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+        ],
         default_base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
         capabilities: ProviderCapabilities {
             native_tool_calling: true,
@@ -114,11 +118,17 @@ pub static COMPAT_DEFS: &[OpenAiCompatDef] = &[
         },
         min_temperature: None,
     },
-
     OpenAiCompatDef {
         name: "xai",
         // xAI API is fully OpenAI-compatible.
-        aliases: &["xai", "grok", "grok-2", "grok-2-vision", "grok-beta", "grok-3"],
+        aliases: &[
+            "xai",
+            "grok",
+            "grok-2",
+            "grok-2-vision",
+            "grok-beta",
+            "grok-3",
+        ],
         default_base_url: "https://api.x.ai/v1",
         capabilities: ProviderCapabilities {
             native_tool_calling: true,
@@ -127,14 +137,19 @@ pub static COMPAT_DEFS: &[OpenAiCompatDef] = &[
         },
         min_temperature: None,
     },
-
     // ── Chinese providers ────────────────────────────────────────────────────
-
     OpenAiCompatDef {
         name: "qwen",
         // Alibaba DashScope — Qwen models.
         // Also reachable via the alias "dashscope".
-        aliases: &["qwen", "dashscope", "qwen-max", "qwen-plus", "qwen-turbo", "qwen-long"],
+        aliases: &[
+            "qwen",
+            "dashscope",
+            "qwen-max",
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen-long",
+        ],
         default_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
         capabilities: ProviderCapabilities {
             native_tool_calling: true,
@@ -147,7 +162,9 @@ pub static COMPAT_DEFS: &[OpenAiCompatDef] = &[
         name: "glm",
         // Zhipu AI / Z.AI — GLM models.
         // Also reachable via the aliases "zhipu" and "zai".
-        aliases: &["glm", "zhipu", "zai", "glm-4", "glm-4.5", "glm-4.6", "glm-4.7", "glm-5"],
+        aliases: &[
+            "glm", "zhipu", "zai", "glm-4", "glm-4.5", "glm-4.6", "glm-4.7", "glm-5",
+        ],
         default_base_url: "https://api.z.ai/api/paas/v4",
         capabilities: ProviderCapabilities {
             native_tool_calling: true,
@@ -293,8 +310,7 @@ impl Provider for OpenAiCompatProvider {
             .json(&body);
 
         if let Some(key) = &self.key {
-            builder =
-                builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
+            builder = builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
         }
 
         let resp = builder.send().await?;
@@ -366,9 +382,7 @@ impl Provider for OpenAiCompatProvider {
     /// Most OpenAI-compatible providers expose this endpoint; those that don't
     /// will return a non-2xx response which is silently converted to `Ok(None)`.
     async fn list_models(&self) -> Result<Option<Vec<String>>> {
-        let mut builder = self
-            .client
-            .get(format!("{}/models", self.base_url));
+        let mut builder = self.client.get(format!("{}/models", self.base_url));
 
         if let Some(key) = &self.key {
             builder = builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
@@ -420,7 +434,8 @@ pub fn spec_for(name: &'static str) -> ProviderSpec {
         capabilities: def.capabilities.clone(),
         // `def` is `&'static`, so the closure is `'static` too.
         factory: Box::new(move |key, url| {
-            Box::new(OpenAiCompatProvider::new(def, key, url)) as Box<dyn adaclaw_core::provider::Provider>
+            Box::new(OpenAiCompatProvider::new(def, key, url))
+                as Box<dyn adaclaw_core::provider::Provider>
         }),
     }
 }

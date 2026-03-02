@@ -1,6 +1,6 @@
 use crate::shell::{safe_path, workspace_root};
 use adaclaw_core::tool::{Tool, ToolResult, ToolSpec};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -168,14 +168,14 @@ impl Tool for FileWriteTool {
         };
 
         // Create parent directories if they don't exist
-        if let Some(parent) = abs_path.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to create directories: {}", e)),
-                });
-            }
+        if let Some(parent) = abs_path.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Failed to create directories: {}", e)),
+            });
         }
 
         let result = if append {

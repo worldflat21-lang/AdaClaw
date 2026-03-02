@@ -17,7 +17,6 @@
 use crate::agents::delegate::DelegateTool;
 use crate::agents::instance::AgentInstance;
 use crate::agents::registry::AgentRegistry;
-use adaclaw_core::memory::Memory;
 use crate::bus::queue::AppMessageBus;
 use crate::bus::router::AgentRouter;
 use crate::config::schema::{AgentConfig, Config, McpServerConfig as SchemaMcpServerConfig};
@@ -26,7 +25,8 @@ use crate::observability::{self, ObserverEvent};
 use crate::state::StateManager;
 use adaclaw_channels::manager::ChannelManager;
 use adaclaw_core::channel::{InboundMessage, MessageBus, MessageContent, OutboundMessage};
-use adaclaw_memory::factory::{create_memory, create_memory_with_config, MemoryFactoryConfig};
+use adaclaw_core::memory::Memory;
+use adaclaw_memory::factory::{MemoryFactoryConfig, create_memory, create_memory_with_config};
 use adaclaw_providers::router::create_provider;
 use adaclaw_security::{
     audit::{AuditKind, AuditLogger},
@@ -65,15 +65,15 @@ pub async fn start_daemon() -> Result<()> {
     // ── 2. 安全子系统初始化 ────────────────────────────────────────────────────
 
     // 2a. 容器环境检测（Full 模式下警告）
-    let autonomy_level = config.security.autonomy_level
+    let autonomy_level = config
+        .security
+        .autonomy_level
         .parse::<adaclaw_security::approval::AutonomyLevel>()
         .unwrap_or(adaclaw_security::approval::AutonomyLevel::Supervised);
-    if !config.security.allow_full_outside_container {
-        if let Some(warning) =
-            ContainerEnvironment::check_autonomy_safety(&autonomy_level)
-        {
-            ContainerEnvironment::print_warning(&warning);
-        }
+    if !config.security.allow_full_outside_container
+        && let Some(warning) = ContainerEnvironment::check_autonomy_safety(&autonomy_level)
+    {
+        ContainerEnvironment::print_warning(&warning);
     }
 
     // 2b. Estop 控制器（从磁盘恢复状态）
@@ -90,27 +90,23 @@ pub async fn start_daemon() -> Result<()> {
     }
 
     // 2c. 审计日志
-    let audit_logger: Option<Arc<AuditLogger>> = if let Some(audit_path) =
-        &config.security.audit_log
-    {
-        match AuditLogger::new(audit_path) {
-            Ok(logger) => {
-                info!(path = %audit_path, "Audit logger initialized");
-                let logger = Arc::new(logger);
-                logger.log_started(
-                    env!("CARGO_PKG_VERSION"),
-                    &config.security.autonomy_level,
-                );
-                Some(logger)
+    let audit_logger: Option<Arc<AuditLogger>> =
+        if let Some(audit_path) = &config.security.audit_log {
+            match AuditLogger::new(audit_path) {
+                Ok(logger) => {
+                    info!(path = %audit_path, "Audit logger initialized");
+                    let logger = Arc::new(logger);
+                    logger.log_started(env!("CARGO_PKG_VERSION"), &config.security.autonomy_level);
+                    Some(logger)
+                }
+                Err(e) => {
+                    warn!(error = %e, path = %audit_path, "Failed to initialize audit logger");
+                    None
+                }
             }
-            Err(e) => {
-                warn!(error = %e, path = %audit_path, "Failed to initialize audit logger");
-                None
-            }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     // 2d. 速率限制器
     let rate_limiter = Arc::new(RateLimiter::new(RateLimitConfig {
@@ -155,12 +151,16 @@ pub async fn start_daemon() -> Result<()> {
     }
 
     // Runtime tracer (optional JSONL file)
-    let runtime_tracer = config.observability.runtime_trace_path.as_ref().map(|path| {
-        let max = config.observability.runtime_trace_max_entries;
-        let tracer = crate::observability::RuntimeTracer::new(path, max);
-        info!(path = %path, max_entries = max, "Runtime tracer initialized");
-        Arc::new(tracer)
-    });
+    let runtime_tracer = config
+        .observability
+        .runtime_trace_path
+        .as_ref()
+        .map(|path| {
+            let max = config.observability.runtime_trace_max_entries;
+            let tracer = crate::observability::RuntimeTracer::new(path, max);
+            info!(path = %path, max_entries = max, "Runtime tracer initialized");
+            Arc::new(tracer)
+        });
 
     // Log daemon start event
     observability::record(ObserverEvent::ChannelMessage {
@@ -189,7 +189,10 @@ pub async fn start_daemon() -> Result<()> {
             Arc::from(m)
         }
         Err(e) => {
-            warn!("Failed to open memory backend: {}. Falling back to none.", e);
+            warn!(
+                "Failed to open memory backend: {}. Falling back to none.",
+                e
+            );
             Arc::from(create_memory("none", "").expect("none memory always succeeds"))
         }
     };
@@ -226,27 +229,45 @@ pub async fn start_daemon() -> Result<()> {
 
     // ── Phase 10: MCP 工具加载 ─────────────────────────────────────────────────
     let mcp_tools: Arc<Vec<adaclaw_tools::mcp::McpTool>> = if !config.tools.mcp_servers.is_empty() {
-        info!(servers = config.tools.mcp_servers.len(), "Loading MCP servers...");
-        let loader_configs: std::collections::HashMap<String, adaclaw_tools::mcp::loader::McpServerConfig> =
-            config.tools.mcp_servers.iter().map(|(name, cfg)| {
+        info!(
+            servers = config.tools.mcp_servers.len(),
+            "Loading MCP servers..."
+        );
+        let loader_configs: std::collections::HashMap<
+            String,
+            adaclaw_tools::mcp::loader::McpServerConfig,
+        > = config
+            .tools
+            .mcp_servers
+            .iter()
+            .map(|(name, cfg)| {
                 let lc = match cfg {
-                    SchemaMcpServerConfig::Stdio { command, args, env, tool_timeout } =>
-                        adaclaw_tools::mcp::loader::McpServerConfig::Stdio {
-                            command: command.clone(),
-                            args: args.clone(),
-                            env: env.clone(),
-                            tool_timeout: *tool_timeout,
-                        },
-                    SchemaMcpServerConfig::Http { url, headers, tool_timeout } =>
-                        adaclaw_tools::mcp::loader::McpServerConfig::Http {
-                            url: url.clone(),
-                            headers: headers.clone(),
-                            tool_timeout: *tool_timeout,
-                        },
+                    SchemaMcpServerConfig::Stdio {
+                        command,
+                        args,
+                        env,
+                        tool_timeout,
+                    } => adaclaw_tools::mcp::loader::McpServerConfig::Stdio {
+                        command: command.clone(),
+                        args: args.clone(),
+                        env: env.clone(),
+                        tool_timeout: *tool_timeout,
+                    },
+                    SchemaMcpServerConfig::Http {
+                        url,
+                        headers,
+                        tool_timeout,
+                    } => adaclaw_tools::mcp::loader::McpServerConfig::Http {
+                        url: url.clone(),
+                        headers: headers.clone(),
+                        tool_timeout: *tool_timeout,
+                    },
                 };
                 (name.clone(), lc)
-            }).collect();
-        let mcp_vec = adaclaw_tools::mcp::loader::McpLoader::load_all_clonable(&loader_configs).await;
+            })
+            .collect();
+        let mcp_vec =
+            adaclaw_tools::mcp::loader::McpLoader::load_all_clonable(&loader_configs).await;
         info!(tools = mcp_vec.len(), "MCP tools ready");
         Arc::new(mcp_vec)
     } else {
@@ -304,7 +325,7 @@ pub async fn start_daemon() -> Result<()> {
         warn!("No agents registered! Creating a fallback assistant agent.");
         if let Some(provider) = providers.values().next().cloned() {
             let cfg = AgentConfig::default();
-        if let Ok(inst) = AgentInstance::new("assistant", &cfg, provider) {
+            if let Ok(inst) = AgentInstance::new("assistant", &cfg, provider) {
                 registry.insert(inst.with_memory(Arc::clone(&memory)));
             }
         }
@@ -351,11 +372,12 @@ pub async fn start_daemon() -> Result<()> {
         match ch_cfg.kind.as_str() {
             "telegram" => {
                 if let Some(token) = &ch_cfg.token {
-                    let mut ch = adaclaw_channels::telegram::TelegramChannel::new(
-                        token.clone(),
-                    )
-                    .with_allow_from(ch_cfg.allow_from.clone())
-                    .with_group_config(ch_cfg.allow_from_groups.clone(), ch_cfg.require_mention);
+                    let mut ch = adaclaw_channels::telegram::TelegramChannel::new(token.clone())
+                        .with_allow_from(ch_cfg.allow_from.clone())
+                        .with_group_config(
+                            ch_cfg.allow_from_groups.clone(),
+                            ch_cfg.require_mention,
+                        );
                     if let Some(proxy) = ch_cfg.extra.get("proxy") {
                         ch = ch.with_proxy(proxy.clone());
                     }
@@ -371,22 +393,49 @@ pub async fn start_daemon() -> Result<()> {
                 info!("Registered CLI channel '{}'", chan_name);
             }
             "dingtalk" => {
-                let port: u16 = ch_cfg.extra.get("webhook_port").and_then(|s| s.parse().ok()).unwrap_or(9001);
-                let path = ch_cfg.extra.get("webhook_path").cloned().unwrap_or_else(|| "/webhook/dingtalk".to_string());
+                let port: u16 = ch_cfg
+                    .extra
+                    .get("webhook_port")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(9001);
+                let path = ch_cfg
+                    .extra
+                    .get("webhook_path")
+                    .cloned()
+                    .unwrap_or_else(|| "/webhook/dingtalk".to_string());
                 let ch = Arc::new(adaclaw_channels::dingtalk::DingTalkChannel::new(
-                    ch_cfg.webhook_secret.clone(), ch_cfg.allow_from.clone(), port, path,
+                    ch_cfg.webhook_secret.clone(),
+                    ch_cfg.allow_from.clone(),
+                    port,
+                    path,
                 ));
                 channel_manager.register(ch);
-                info!("Registered DingTalk channel '{}' on port {}", chan_name, port);
+                info!(
+                    "Registered DingTalk channel '{}' on port {}",
+                    chan_name, port
+                );
             }
             "feishu" => {
                 let app_id = ch_cfg.extra.get("app_id").cloned().unwrap_or_default();
                 let app_secret = ch_cfg.extra.get("app_secret").cloned().unwrap_or_default();
                 let vtoken = ch_cfg.extra.get("verification_token").cloned();
-                let port: u16 = ch_cfg.extra.get("webhook_port").and_then(|s| s.parse().ok()).unwrap_or(9002);
-                let path = ch_cfg.extra.get("webhook_path").cloned().unwrap_or_else(|| "/webhook/feishu".to_string());
+                let port: u16 = ch_cfg
+                    .extra
+                    .get("webhook_port")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(9002);
+                let path = ch_cfg
+                    .extra
+                    .get("webhook_path")
+                    .cloned()
+                    .unwrap_or_else(|| "/webhook/feishu".to_string());
                 let ch = Arc::new(adaclaw_channels::feishu::FeishuChannel::new(
-                    app_id, app_secret, vtoken, ch_cfg.allow_from.clone(), port, path,
+                    app_id,
+                    app_secret,
+                    vtoken,
+                    ch_cfg.allow_from.clone(),
+                    port,
+                    path,
                 ));
                 channel_manager.register(ch);
                 info!("Registered Feishu channel '{}' on port {}", chan_name, port);
@@ -394,19 +443,34 @@ pub async fn start_daemon() -> Result<()> {
             "wechat_work" | "wecom" => {
                 let token = ch_cfg.token.clone().unwrap_or_default();
                 let aes_key = ch_cfg.extra.get("encoding_aes_key").cloned();
-                let port: u16 = ch_cfg.extra.get("webhook_port").and_then(|s| s.parse().ok()).unwrap_or(9003);
-                let path = ch_cfg.extra.get("webhook_path").cloned().unwrap_or_else(|| "/webhook/wecom".to_string());
+                let port: u16 = ch_cfg
+                    .extra
+                    .get("webhook_port")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(9003);
+                let path = ch_cfg
+                    .extra
+                    .get("webhook_path")
+                    .cloned()
+                    .unwrap_or_else(|| "/webhook/wecom".to_string());
                 let ch = Arc::new(adaclaw_channels::wechat_work::WeComChannel::new(
-                    token, aes_key, ch_cfg.allow_from.clone(), port, path,
+                    token,
+                    aes_key,
+                    ch_cfg.allow_from.clone(),
+                    port,
+                    path,
                 ));
                 channel_manager.register(ch);
                 info!("Registered WeCom channel '{}' on port {}", chan_name, port);
             }
             "discord" => {
                 if let Some(token) = &ch_cfg.token {
-                    let intents: Option<u64> = ch_cfg.extra.get("intents").and_then(|s| s.parse().ok());
+                    let intents: Option<u64> =
+                        ch_cfg.extra.get("intents").and_then(|s| s.parse().ok());
                     let ch = Arc::new(adaclaw_channels::discord::DiscordChannel::new(
-                        token.clone(), ch_cfg.allow_from.clone(), intents,
+                        token.clone(),
+                        ch_cfg.allow_from.clone(),
+                        intents,
                     ));
                     channel_manager.register(ch);
                     info!("Registered Discord channel '{}'", chan_name);
@@ -416,11 +480,26 @@ pub async fn start_daemon() -> Result<()> {
             }
             "slack" => {
                 if let Some(token) = &ch_cfg.token {
-                    let signing_secret = ch_cfg.webhook_secret.clone().or_else(|| ch_cfg.extra.get("signing_secret").cloned());
-                    let port: u16 = ch_cfg.extra.get("webhook_port").and_then(|s| s.parse().ok()).unwrap_or(9004);
-                    let path = ch_cfg.extra.get("webhook_path").cloned().unwrap_or_else(|| "/webhook/slack".to_string());
+                    let signing_secret = ch_cfg
+                        .webhook_secret
+                        .clone()
+                        .or_else(|| ch_cfg.extra.get("signing_secret").cloned());
+                    let port: u16 = ch_cfg
+                        .extra
+                        .get("webhook_port")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(9004);
+                    let path = ch_cfg
+                        .extra
+                        .get("webhook_path")
+                        .cloned()
+                        .unwrap_or_else(|| "/webhook/slack".to_string());
                     let ch = Arc::new(adaclaw_channels::slack::SlackChannel::new(
-                        token.clone(), signing_secret, ch_cfg.allow_from.clone(), port, path,
+                        token.clone(),
+                        signing_secret,
+                        ch_cfg.allow_from.clone(),
+                        port,
+                        path,
                     ));
                     channel_manager.register(ch);
                     info!("Registered Slack channel '{}' on port {}", chan_name, port);
@@ -429,27 +508,54 @@ pub async fn start_daemon() -> Result<()> {
                 }
             }
             "webhook" => {
-                let port: u16 = ch_cfg.extra.get("webhook_port").and_then(|s| s.parse().ok()).unwrap_or(9005);
-                let path = ch_cfg.extra.get("webhook_path").cloned().unwrap_or_else(|| "/webhook/custom".to_string());
+                let port: u16 = ch_cfg
+                    .extra
+                    .get("webhook_port")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(9005);
+                let path = ch_cfg
+                    .extra
+                    .get("webhook_path")
+                    .cloned()
+                    .unwrap_or_else(|| "/webhook/custom".to_string());
                 let outbound_url = ch_cfg.extra.get("outbound_url").cloned();
                 let ch = Arc::new(adaclaw_channels::webhook::WebhookChannel::new(
-                    ch_cfg.webhook_secret.clone(), ch_cfg.allow_from.clone(), port, path, outbound_url,
+                    ch_cfg.webhook_secret.clone(),
+                    ch_cfg.allow_from.clone(),
+                    port,
+                    path,
+                    outbound_url,
                 ));
                 channel_manager.register(ch);
-                info!("Registered Webhook channel '{}' on port {}", chan_name, port);
+                info!(
+                    "Registered Webhook channel '{}' on port {}",
+                    chan_name, port
+                );
             }
             // P1-1 Fix: WhatsApp 渠道注册（之前遗漏）
             "whatsapp" => {
                 if let Some(access_token) = &ch_cfg.token {
-                    let phone_number_id = ch_cfg.extra.get("phone_number_id")
-                        .cloned().unwrap_or_default();
-                    let verify_token = ch_cfg.extra.get("verify_token")
-                        .cloned().unwrap_or_default();
+                    let phone_number_id = ch_cfg
+                        .extra
+                        .get("phone_number_id")
+                        .cloned()
+                        .unwrap_or_default();
+                    let verify_token = ch_cfg
+                        .extra
+                        .get("verify_token")
+                        .cloned()
+                        .unwrap_or_default();
                     let app_secret = ch_cfg.webhook_secret.clone();
-                    let port: u16 = ch_cfg.extra.get("webhook_port")
-                        .and_then(|s| s.parse().ok()).unwrap_or(9005);
-                    let path = ch_cfg.extra.get("webhook_path")
-                        .cloned().unwrap_or_else(|| "/whatsapp".to_string());
+                    let port: u16 = ch_cfg
+                        .extra
+                        .get("webhook_port")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(9005);
+                    let path = ch_cfg
+                        .extra
+                        .get("webhook_path")
+                        .cloned()
+                        .unwrap_or_else(|| "/whatsapp".to_string());
                     let ch = Arc::new(adaclaw_channels::whatsapp::WhatsAppChannel::new(
                         access_token.clone(),
                         phone_number_id,
@@ -460,13 +566,22 @@ pub async fn start_daemon() -> Result<()> {
                         path,
                     ));
                     channel_manager.register(ch);
-                    info!("Registered WhatsApp channel '{}' on port {}", chan_name, port);
+                    info!(
+                        "Registered WhatsApp channel '{}' on port {}",
+                        chan_name, port
+                    );
                 } else {
-                    warn!("WhatsApp channel '{}' has no token (access_token), skipping", chan_name);
+                    warn!(
+                        "WhatsApp channel '{}' has no token (access_token), skipping",
+                        chan_name
+                    );
                 }
             }
             other => {
-                warn!("Unknown channel kind '{}' for '{}', skipping", other, chan_name);
+                warn!(
+                    "Unknown channel kind '{}' for '{}', skipping",
+                    other, chan_name
+                );
             }
         }
     }
@@ -543,9 +658,8 @@ pub async fn start_daemon() -> Result<()> {
     // 对标 picoclaw pkg/state/state.go。
     // 追踪最近一次真实用户消息的 (channel, session_id)，
     // 供 Heartbeat 在 target_channel 未配置时动态回传结果。
-    let workspace_path = std::path::Path::new(
-        config.security.workspace.as_deref().unwrap_or("workspace"),
-    );
+    let workspace_path =
+        std::path::Path::new(config.security.workspace.as_deref().unwrap_or("workspace"));
     let state_manager = Arc::new(StateManager::new(workspace_path));
     info!(
         path = %workspace_path.join("state").join("state.json").display(),
@@ -611,8 +725,10 @@ pub async fn start_daemon() -> Result<()> {
         cancel_agent,
     ));
 
-    info!("AdaClaw daemon running (autonomy: {}). Press Ctrl-C to stop.",
-          config.security.autonomy_level);
+    info!(
+        "AdaClaw daemon running (autonomy: {}). Press Ctrl-C to stop.",
+        config.security.autonomy_level
+    );
 
     // ── 12. 等待 Ctrl-C → 优雅关闭 ────────────────────────────────────────────
     tokio::signal::ctrl_c()
@@ -643,8 +759,8 @@ async fn agent_dispatch_loop(
     observer: Arc<dyn observability::Observer>,
     tracer: Option<Arc<crate::observability::RuntimeTracer>>,
     mcp_tools: Arc<Vec<adaclaw_tools::mcp::McpTool>>,
-    memory: Arc<dyn Memory>,       // P0-1 + P0-2: 持久记忆后端
-    state: Arc<StateManager>,      // StateManager：追踪最近活跃渠道（对标 picoclaw pkg/state）
+    memory: Arc<dyn Memory>,  // P0-1 + P0-2: 持久记忆后端
+    state: Arc<StateManager>, // StateManager：追踪最近活跃渠道（对标 picoclaw pkg/state）
     cancel: CancellationToken,
 ) {
     loop {
@@ -969,24 +1085,14 @@ fn handle_system_message(msg: InboundMessage, bus: &Arc<AppMessageBus>) {
         .metadata
         .get("origin_channel")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| {
-            msg.session_id
-                .split('\x1E')
-                .next()
-                .unwrap_or("cli")
-        })
+        .unwrap_or_else(|| msg.session_id.split('\x1E').next().unwrap_or("cli"))
         .to_string();
 
     let origin_session = msg
         .metadata
         .get("origin_session")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| {
-            msg.session_id
-                .split('\x1E')
-                .nth(1)
-                .unwrap_or("default")
-        })
+        .unwrap_or_else(|| msg.session_id.split('\x1E').nth(1).unwrap_or("default"))
         .to_string();
 
     let task_id = msg

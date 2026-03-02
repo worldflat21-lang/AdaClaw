@@ -21,7 +21,11 @@ impl Default for LogObserver {
 impl Observer for LogObserver {
     fn record_event(&self, event: &ObserverEvent) {
         match event {
-            ObserverEvent::AgentTurn { agent_id, provider, model } => {
+            ObserverEvent::AgentTurn {
+                agent_id,
+                provider,
+                model,
+            } => {
                 tracing::debug!(
                     agent_id = %agent_id,
                     provider = %provider,
@@ -29,7 +33,13 @@ impl Observer for LogObserver {
                     "agent turn started"
                 );
             }
-            ObserverEvent::AgentTurnEnd { agent_id, provider, model, duration, success } => {
+            ObserverEvent::AgentTurnEnd {
+                agent_id,
+                provider,
+                model,
+                duration,
+                success,
+            } => {
                 if *success {
                     tracing::debug!(
                         agent_id = %agent_id,
@@ -51,7 +61,15 @@ impl Observer for LogObserver {
             ObserverEvent::LlmRequest { provider, model } => {
                 tracing::debug!(provider = %provider, model = %model, "llm request");
             }
-            ObserverEvent::LlmResponse { provider, model, duration, success, input_tokens, output_tokens, error_message } => {
+            ObserverEvent::LlmResponse {
+                provider,
+                model,
+                duration,
+                success,
+                input_tokens,
+                output_tokens,
+                error_message,
+            } => {
                 if *success {
                     tracing::debug!(
                         provider = %provider,
@@ -71,7 +89,11 @@ impl Observer for LogObserver {
                     );
                 }
             }
-            ObserverEvent::ToolCall { tool, duration, success } => {
+            ObserverEvent::ToolCall {
+                tool,
+                duration,
+                success,
+            } => {
                 if *success {
                     tracing::debug!(
                         tool = %tool,

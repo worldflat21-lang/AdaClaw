@@ -12,7 +12,7 @@ use adaclaw_core::channel::{Channel, MessageBus, OutboundMessage};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 pub struct ChannelManager {
     channels: Arc<RwLock<HashMap<String, Arc<dyn Channel>>>>,

@@ -16,7 +16,7 @@
 
 use axum::{
     extract::Request,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -106,7 +106,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     // XOR fold：任意字节不匹配时 acc != 0
-    let acc = a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    let acc = a
+        .iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y));
     acc == 0
 }
 

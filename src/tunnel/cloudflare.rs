@@ -9,7 +9,7 @@
 //! - Linux: download from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
 //! - Windows: download from the same URL
 
-use super::{spawn_process, TunnelHandle};
+use super::{TunnelHandle, spawn_process};
 use std::process::Command;
 use tracing::info;
 

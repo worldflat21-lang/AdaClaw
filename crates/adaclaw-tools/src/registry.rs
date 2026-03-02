@@ -17,15 +17,15 @@ pub fn all_tools(memory: Option<Arc<dyn Memory>>) -> Vec<Box<dyn Tool>> {
         Box::new(crate::file::FileListTool::new()),
         Box::new(match &memory {
             Some(m) => crate::memory_tools::MemoryStoreTool::with_memory(Arc::clone(m)),
-            None    => crate::memory_tools::MemoryStoreTool::new(),
+            None => crate::memory_tools::MemoryStoreTool::new(),
         }),
         Box::new(match &memory {
             Some(m) => crate::memory_tools::MemoryRecallTool::with_memory(Arc::clone(m)),
-            None    => crate::memory_tools::MemoryRecallTool::new(),
+            None => crate::memory_tools::MemoryRecallTool::new(),
         }),
         Box::new(match &memory {
             Some(m) => crate::memory_tools::MemoryForgetTool::with_memory(Arc::clone(m)),
-            None    => crate::memory_tools::MemoryForgetTool::new(),
+            None => crate::memory_tools::MemoryForgetTool::new(),
         }),
         Box::new(crate::http::HttpRequestTool::new()),
     ]

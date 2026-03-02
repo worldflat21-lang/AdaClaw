@@ -16,19 +16,19 @@
 //! | Email        | `email`       | IMAP + SMTP         |
 //! | Matrix       | `matrix`      | Client-Server API（`feature = "matrix"`） |
 
-/// Phase 14-P0-2: structured error types for library crate consumers.
-pub mod error;
 pub mod base;
 pub mod cli;
 pub mod dingtalk;
 pub mod discord;
 pub mod email;
+/// Phase 14-P0-2: structured error types for library crate consumers.
+pub mod error;
 pub mod feishu;
 pub mod manager;
 pub mod slack;
 pub mod telegram;
-pub mod wechat_work;
 pub mod webhook;
+pub mod wechat_work;
 pub mod whatsapp;
 
 #[cfg(feature = "matrix")]
@@ -42,9 +42,9 @@ pub use email::EmailChannel;
 pub use feishu::FeishuChannel;
 pub use manager::ChannelManager;
 pub use slack::SlackChannel;
-pub use telegram::{markdown_to_telegram_html, TelegramChannel};
-pub use wechat_work::WeComChannel;
+pub use telegram::{TelegramChannel, markdown_to_telegram_html};
 pub use webhook::WebhookChannel;
+pub use wechat_work::WeComChannel;
 pub use whatsapp::WhatsAppChannel;
 
 #[cfg(feature = "matrix")]

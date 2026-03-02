@@ -33,7 +33,7 @@ use adaclaw_core::channel::{MessageContent, OutboundMessage};
 use adaclaw_core::tool::{Tool, ToolResult, ToolSpec};
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -183,11 +183,7 @@ mod tests {
         // subscribe to the outbound side in these tests.
         let (inbound_tx, _) = tokio::sync::mpsc::channel(16);
         let (outbound_tx, _) = tokio::sync::broadcast::channel(16);
-        let bus = Arc::new(AppMessageBus::new(
-            inbound_tx,
-            outbound_tx,
-            vec![],
-        ));
+        let bus = Arc::new(AppMessageBus::new(inbound_tx, outbound_tx, vec![]));
         MessageTool::new(bus, "cli", "test-session")
     }
 
@@ -237,7 +233,9 @@ mod tests {
         assert!(result.success, "execute should succeed");
 
         // Verify the outbound message was actually published to the bus
-        let msg = rx.try_recv().expect("outbound message should be on the bus");
+        let msg = rx
+            .try_recv()
+            .expect("outbound message should be on the bus");
         assert_eq!(msg.target_channel, "telegram");
         assert_eq!(msg.target_session_id, "chat-42");
         match msg.content {
@@ -263,7 +261,9 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
-        let msg = rx.try_recv().expect("outbound message should be on the bus");
+        let msg = rx
+            .try_recv()
+            .expect("outbound message should be on the bus");
         assert_eq!(msg.target_channel, "discord");
         assert_eq!(msg.target_session_id, "guild-123");
     }

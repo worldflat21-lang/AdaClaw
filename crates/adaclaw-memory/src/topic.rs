@@ -125,10 +125,10 @@ impl TopicManager {
         // Update keyword history first (always, regardless of embedder)
         self.push_recent_message(new_message);
 
-        if let Some(emb) = embedder {
-            if emb.dim() > 0 {
-                return self.check_with_embedding(new_message, emb).await;
-            }
+        if let Some(emb) = embedder
+            && emb.dim() > 0
+        {
+            return self.check_with_embedding(new_message, emb).await;
         }
 
         // Fallback: keyword-based comparison
@@ -161,7 +161,9 @@ impl TopicManager {
             Ok(TopicSwitchResult::PartialDrift)
         } else {
             let new_topic = self.switch_to_new_topic_embedding(&new_emb)?;
-            Ok(TopicSwitchResult::Switched { new_topic_id: new_topic })
+            Ok(TopicSwitchResult::Switched {
+                new_topic_id: new_topic,
+            })
         }
     }
 
@@ -229,7 +231,9 @@ impl TopicManager {
             // Lock is no longer held here — safe to call find_or_create.
             let new_topic = self.find_or_create_topic_by_keywords();
             *self.current_topic_id.lock().unwrap() = new_topic.clone();
-            TopicSwitchResult::Switched { new_topic_id: new_topic }
+            TopicSwitchResult::Switched {
+                new_topic_id: new_topic,
+            }
         }
     }
 
@@ -241,10 +245,7 @@ impl TopicManager {
         // Clone recent messages and drop the lock before acquiring known_topics.
         // This avoids potential lock-ordering deadlocks.
         let recent: Vec<String> = self.recent_messages.lock().unwrap().clone();
-        let new_words: HashSet<String> = recent
-            .iter()
-            .flat_map(|m| tokenize_simple(m))
-            .collect();
+        let new_words: HashSet<String> = recent.iter().flat_map(|m| tokenize_simple(m)).collect();
 
         let known = self.known_topics.lock().unwrap();
         let best = known
@@ -333,15 +334,13 @@ fn tokenize_simple(text: &str) -> impl Iterator<Item = String> + '_ {
 
 /// Common stop words (English + Chinese connectives).
 static STOP_WORDS: &[&str] = &[
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "shall", "should",
-    "may", "might", "must", "can", "could", "to", "of", "in", "on", "at", "by",
-    "for", "with", "about", "as", "from", "that", "this", "it", "its",
-    "and", "or", "but", "not", "no", "so", "if", "then", "than", "when",
-    "my", "your", "his", "her", "our", "their", "we", "you", "they", "he", "she",
-    "me", "him", "us", "them", "what", "which", "who", "how",
-    "我", "你", "他", "她", "它", "我们", "你们", "他们", "这", "那", "是", "的",
-    "了", "在", "和", "也", "都", "就", "不", "很", "会", "要", "有",
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "will", "would", "shall", "should", "may", "might", "must", "can",
+    "could", "to", "of", "in", "on", "at", "by", "for", "with", "about", "as", "from", "that",
+    "this", "it", "its", "and", "or", "but", "not", "no", "so", "if", "then", "than", "when", "my",
+    "your", "his", "her", "our", "their", "we", "you", "they", "he", "she", "me", "him", "us",
+    "them", "what", "which", "who", "how", "我", "你", "他", "她", "它", "我们", "你们", "他们",
+    "这", "那", "是", "的", "了", "在", "和", "也", "都", "就", "不", "很", "会", "要", "有",
 ];
 
 // ── unit tests ────────────────────────────────────────────────────────────────
@@ -392,14 +391,19 @@ mod tests {
         // history_words ≈ {"rust","traits","lifetimes","ownership","model"} (5 words)
         // new_words     ≈ {"lifetimes","work","rust"} (3 words)
         // intersection  = {"rust","lifetimes"} → ratio = 2/5 = 0.40 ≥ 0.30 → PartialDrift
-        for msg in &["rust traits and lifetimes", "rust ownership model", "rust async await"] {
+        for msg in &[
+            "rust traits and lifetimes",
+            "rust ownership model",
+            "rust async await",
+        ] {
             tm.push_recent_message(msg);
         }
         let result = tm.check_with_keywords("how do lifetimes work in rust");
         // "rust" and "lifetimes" appear in both history and new → should be same or partial
         assert!(
             result == TopicSwitchResult::SameTopic || result == TopicSwitchResult::PartialDrift,
-            "Expected same/partial topic, got {:?}", result
+            "Expected same/partial topic, got {:?}",
+            result
         );
     }
 
@@ -412,21 +416,37 @@ mod tests {
         }
         // Completely unrelated new message
         let result = tm.check_with_keywords("write me a haiku about autumn leaves falling");
-        assert_eq!(result, TopicSwitchResult::Switched {
-            new_topic_id: match result.clone() {
-                TopicSwitchResult::Switched { new_topic_id } => new_topic_id,
-                _ => panic!("Expected Switched"),
+        assert_eq!(
+            result,
+            TopicSwitchResult::Switched {
+                new_topic_id: match result.clone() {
+                    TopicSwitchResult::Switched { new_topic_id } => new_topic_id,
+                    _ => panic!("Expected Switched"),
+                }
             }
-        });
+        );
     }
 
     #[test]
     fn test_topic_switch_result_to_recall_scope() {
-        assert_eq!(TopicSwitchResult::SameTopic.to_recall_scope(), RecallScope::Full);
-        assert_eq!(TopicSwitchResult::PartialDrift.to_recall_scope(), RecallScope::FactsOnly);
+        assert_eq!(
+            TopicSwitchResult::SameTopic.to_recall_scope(),
+            RecallScope::Full
+        );
+        assert_eq!(
+            TopicSwitchResult::PartialDrift.to_recall_scope(),
+            RecallScope::FactsOnly
+        );
 
-        let sw = TopicSwitchResult::Switched { new_topic_id: "t1".to_string() };
-        assert_eq!(sw.to_recall_scope(), RecallScope::CurrentTopic { topic_id: "t1".to_string() });
+        let sw = TopicSwitchResult::Switched {
+            new_topic_id: "t1".to_string(),
+        };
+        assert_eq!(
+            sw.to_recall_scope(),
+            RecallScope::CurrentTopic {
+                topic_id: "t1".to_string()
+            }
+        );
     }
 
     #[test]

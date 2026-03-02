@@ -29,17 +29,17 @@
 
 use crate::base::BaseChannel;
 use adaclaw_core::channel::{Channel, MessageBus, MessageContent, OutboundMessage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::post,
-    Json, Router,
 };
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,11 +88,7 @@ struct SlackState {
 impl SlackState {
     /// 验证 Slack 签名
     /// v0={HMAC-SHA256("v0:{timestamp}:{body}", signing_secret)}
-    fn verify_signature(
-        &self,
-        headers: &HeaderMap,
-        body: &str,
-    ) -> bool {
+    fn verify_signature(&self, headers: &HeaderMap, body: &str) -> bool {
         let secret = match &self.signing_secret {
             Some(s) => s,
             None => return true, // 未配置密钥，跳过验证
@@ -118,7 +114,10 @@ impl SlackState {
                 .unwrap_or_default()
                 .as_secs() as i64;
             if (now - ts).abs() > 300 {
-                warn!(channel = "slack", "Request timestamp too old, possible replay attack");
+                warn!(
+                    channel = "slack",
+                    "Request timestamp too old, possible replay attack"
+                );
                 return false;
             }
         }
@@ -172,7 +171,11 @@ impl SlackState {
             .await
             .map_err(|e| anyhow!("Slack postMessage response parse failed: {}", e))?;
 
-        if !resp_body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if !resp_body
+            .get("ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             let err = resp_body
                 .get("error")
                 .and_then(|v| v.as_str())
@@ -263,7 +266,9 @@ impl Channel for SlackChannel {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app)
-            .with_graceful_shutdown(async { rx.await.ok(); })
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            })
             .await
             .map_err(|e| anyhow!("Slack HTTP server error: {}", e))?;
 
@@ -289,7 +294,9 @@ impl Channel for SlackChannel {
             bus: Arc::new(crate::DummyBus),
             http_client: self.http_client.clone(),
         };
-        state.post_message(&channel_id, &content, thread_ts.as_deref()).await
+        state
+            .post_message(&channel_id, &content, thread_ts.as_deref())
+            .await
     }
 
     async fn stop(&self) -> Result<()> {
@@ -323,78 +330,77 @@ async fn handle_slack_event(
     };
 
     // URL 验证挑战
-    if payload.event_type.as_deref() == Some("url_verification") {
-        if let Some(challenge) = &payload.challenge {
-            return (StatusCode::OK, Json(json!({ "challenge": challenge })));
-        }
+    if payload.event_type.as_deref() == Some("url_verification")
+        && let Some(challenge) = &payload.challenge
+    {
+        return (StatusCode::OK, Json(json!({ "challenge": challenge })));
     }
 
     // 处理消息事件
-    if payload.event_type.as_deref() == Some("event_callback") {
-        if let Some(event) = &payload.event {
-            if event.event_type.as_deref() == Some("message") {
-                // 忽略 Bot 消息和特殊子类型
-                if event.bot_id.is_some() || event.subtype.is_some() {
-                    return (StatusCode::OK, Json(json!({})));
-                }
-
-                let sender_id = event.user.clone().unwrap_or_default();
-                let channel_id = event.channel.clone().unwrap_or_default();
-                let text = event.text.clone().unwrap_or_default();
-                let ts = event.ts.clone().unwrap_or_default();
-
-                if sender_id.is_empty() || channel_id.is_empty() || text.trim().is_empty() {
-                    return (StatusCode::OK, Json(json!({})));
-                }
-
-                debug!(
-                    channel = "slack",
-                    sender_id = %sender_id,
-                    channel_id = %channel_id,
-                    preview = %text.chars().take(60).collect::<String>(),
-                    "Slack message received"
-                );
-
-                // thread_ts：若消息在 thread 中则有值，否则用 ts 自身
-                // session_id 格式："channel_id" 或 "channel_id/thread_ts"
-                // send() 会解析此格式，将回复发到正确的 thread
-                let thread_ts = event.thread_ts.clone().or_else(|| Some(ts.clone()));
-                let session_id = if let Some(ref tts) = thread_ts {
-                    if tts == &ts {
-                        // 顶层消息，session_id = channel_id/ts（创建新 thread）
-                        format!("{}/{}", channel_id, ts)
-                    } else {
-                        // 在已有 thread 中回复
-                        format!("{}/{}", channel_id, tts)
-                    }
-                } else {
-                    channel_id.clone()
-                };
-
-                let mut metadata: HashMap<String, Value> = HashMap::new();
-                metadata.insert("ts".to_string(), Value::String(ts.clone()));
-                if let Some(ref tts) = event.thread_ts {
-                    metadata.insert("thread_ts".to_string(), Value::String(tts.clone()));
-                }
-                metadata.insert(
-                    "team_id".to_string(),
-                    Value::String(payload.team_id.clone().unwrap_or_default()),
-                );
-
-                // session_id = "channel_id/thread_ts"（send() 方法回复到对应 thread）
-                state
-                    .base
-                    .handle_message(
-                        &state.bus,
-                        &sender_id,
-                        &sender_id,
-                        &session_id,
-                        text.trim(),
-                        metadata,
-                    )
-                    .await;
-            }
+    if payload.event_type.as_deref() == Some("event_callback")
+        && let Some(event) = &payload.event
+        && event.event_type.as_deref() == Some("message")
+    {
+        // 忽略 Bot 消息和特殊子类型
+        if event.bot_id.is_some() || event.subtype.is_some() {
+            return (StatusCode::OK, Json(json!({})));
         }
+
+        let sender_id = event.user.clone().unwrap_or_default();
+        let channel_id = event.channel.clone().unwrap_or_default();
+        let text = event.text.clone().unwrap_or_default();
+        let ts = event.ts.clone().unwrap_or_default();
+
+        if sender_id.is_empty() || channel_id.is_empty() || text.trim().is_empty() {
+            return (StatusCode::OK, Json(json!({})));
+        }
+
+        debug!(
+            channel = "slack",
+            sender_id = %sender_id,
+            channel_id = %channel_id,
+            preview = %text.chars().take(60).collect::<String>(),
+            "Slack message received"
+        );
+
+        // thread_ts：若消息在 thread 中则有值，否则用 ts 自身
+        // session_id 格式："channel_id" 或 "channel_id/thread_ts"
+        // send() 会解析此格式，将回复发到正确的 thread
+        let thread_ts = event.thread_ts.clone().or_else(|| Some(ts.clone()));
+        let session_id = if let Some(ref tts) = thread_ts {
+            if tts == &ts {
+                // 顶层消息，session_id = channel_id/ts（创建新 thread）
+                format!("{}/{}", channel_id, ts)
+            } else {
+                // 在已有 thread 中回复
+                format!("{}/{}", channel_id, tts)
+            }
+        } else {
+            channel_id.clone()
+        };
+
+        let mut metadata: HashMap<String, Value> = HashMap::new();
+        metadata.insert("ts".to_string(), Value::String(ts.clone()));
+        if let Some(ref tts) = event.thread_ts {
+            metadata.insert("thread_ts".to_string(), Value::String(tts.clone()));
+        }
+        metadata.insert(
+            "team_id".to_string(),
+            Value::String(payload.team_id.clone().unwrap_or_default()),
+        );
+
+        // session_id = "channel_id/thread_ts"（send() 方法回复到对应 thread）
+        state
+            .base
+            .handle_message(
+                &state.bus,
+                &sender_id,
+                &sender_id,
+                &session_id,
+                text.trim(),
+                metadata,
+            )
+            .await;
     }
 
     (StatusCode::OK, Json(json!({})))
@@ -471,18 +477,12 @@ pub fn markdown_to_slack_mrkdwn(text: &str) -> String {
 
     // Step 9: 还原行内代码
     for (i, code) in inline_codes.iter().enumerate() {
-        result = result.replace(
-            &format!("\x00IC{}\x00", i),
-            &format!("`{}`", code),
-        );
+        result = result.replace(&format!("\x00IC{}\x00", i), &format!("`{}`", code));
     }
 
     // Step 10: 还原代码块
     for (i, code) in code_blocks.iter().enumerate() {
-        result = result.replace(
-            &format!("\x00CB{}\x00", i),
-            &format!("```{}```", code),
-        );
+        result = result.replace(&format!("\x00CB{}\x00", i), &format!("```{}```", code));
     }
 
     result

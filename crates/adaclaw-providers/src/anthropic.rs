@@ -1,8 +1,10 @@
-use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities};
-use anyhow::Result;
-use async_trait::async_trait;
 use crate::error::ProviderError;
 use crate::registry::ProviderSpec;
+use adaclaw_core::provider::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
+};
+use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
@@ -36,7 +38,10 @@ impl AnthropicProvider {
     pub fn new(key: Option<&str>, url: Option<&str>, max_tokens: Option<u32>) -> Self {
         Self {
             key: key.map(|s| Secret::new(s.to_string())),
-            base_url: url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/').to_string(),
+            base_url: url
+                .unwrap_or(DEFAULT_BASE_URL)
+                .trim_end_matches('/')
+                .to_string(),
             client: Client::new(),
             max_tokens: max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         }
@@ -121,7 +126,10 @@ impl Provider for AnthropicProvider {
             .unwrap_or("")
             .to_string();
 
-        Ok(ChatResponse { content, reasoning_content: None })
+        Ok(ChatResponse {
+            content,
+            reasoning_content: None,
+        })
     }
 
     async fn chat_with_system(

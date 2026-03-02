@@ -1,7 +1,7 @@
 use adaclaw_core::memory::{Category, Memory, RecallScope};
 use adaclaw_core::provider::{ChatMessage, ChatRequest, Provider};
 use adaclaw_core::tool::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::future::join_all;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,7 +32,11 @@ pub struct MessageEntry {
 }
 
 impl MessageEntry {
-    pub fn new(role: impl Into<String>, content: impl Into<String>, topic_id: impl Into<String>) -> Self {
+    pub fn new(
+        role: impl Into<String>,
+        content: impl Into<String>,
+        topic_id: impl Into<String>,
+    ) -> Self {
         Self {
             role: role.into(),
             content: content.into(),
@@ -136,7 +140,10 @@ impl AgentEngine {
         //            tier 1 didn't match; typically rare, so low aggregate cost)
         let scope = if detect_clean_intent(input) {
             // Tier 1 matched — user clearly wants clean-slate thinking
-            debug!(input, "Clean intent detected via keyword — using RecallScope::Clean");
+            debug!(
+                input,
+                "Clean intent detected via keyword — using RecallScope::Clean"
+            );
             RecallScope::Clean
         } else {
             // Automatic topic detection (embedding or keyword, no extra LLM call)
@@ -158,10 +165,15 @@ impl AgentEngine {
             };
 
             if drift_with_clean_intent {
-                debug!(input, "Clean intent detected via LLM — using RecallScope::Clean");
+                debug!(
+                    input,
+                    "Clean intent detected via LLM — using RecallScope::Clean"
+                );
                 RecallScope::Clean
             } else {
-                if let adaclaw_memory::topic::TopicSwitchResult::Switched { ref new_topic_id } = switch_result {
+                if let adaclaw_memory::topic::TopicSwitchResult::Switched { ref new_topic_id } =
+                    switch_result
+                {
                     debug!(new_topic_id, "Topic switch detected — pruning old context");
                     self.prune_history_for_topic_switch(new_topic_id);
                 }
@@ -186,7 +198,9 @@ impl AgentEngine {
             // (ROLLING_THRESHOLD=30), then hard-trim as safety net (HARD_MAX=60).
             // Falls back to hard-trim gracefully if the LLM summary call fails.
             // Reference: picoclaw maybeSummarize + zeroclaw auto_compact_history.
-            if let Err(e) = crate::agents::compact::auto_compact_history(&mut messages, provider, model).await {
+            if let Err(e) =
+                crate::agents::compact::auto_compact_history(&mut messages, provider, model).await
+            {
                 warn!(error = %e, "auto_compact_history failed, applying hard trim");
                 crate::agents::compact::trim_history(&mut messages);
             }
@@ -243,22 +257,27 @@ impl AgentEngine {
                 //   and only for complex or error-laden tasks.
                 //
                 // 95%+ of ordinary single-step conversations pay zero extra cost.
-                let final_response = if needs_reflection_tier1(input, &scrubbed, had_tool_error, iteration) {
-                    debug!(
-                        iteration,
-                        had_tool_error,
-                        "Tier 1 reflection triggered — running LLM self-check"
-                    );
-                    tiered_reflect(provider, model, input, scrubbed, &messages).await
-                } else {
-                    scrubbed
-                };
+                let final_response =
+                    if needs_reflection_tier1(input, &scrubbed, had_tool_error, iteration) {
+                        debug!(
+                            iteration,
+                            had_tool_error, "Tier 1 reflection triggered — running LLM self-check"
+                        );
+                        tiered_reflect(provider, model, input, scrubbed, &messages).await
+                    } else {
+                        scrubbed
+                    };
 
                 // Add assistant reply to persistent history
-                self.push_history(MessageEntry::new("assistant", &final_response, &current_topic));
+                self.push_history(MessageEntry::new(
+                    "assistant",
+                    &final_response,
+                    &current_topic,
+                ));
 
                 // Index this conversation turn into memory
-                self.index_conversation(input, &final_response, &current_topic, &scope).await;
+                self.index_conversation(input, &final_response, &current_topic, &scope)
+                    .await;
 
                 return Ok(final_response);
             }
@@ -437,17 +456,39 @@ pub fn detect_clean_intent(message: &str) -> bool {
 
     let patterns: &[&str] = &[
         // Chinese — common natural expressions
-        "不要旧记忆", "不要之前的记忆", "忘掉之前", "忘记之前",
-        "不要被之前", "不要用之前", "不用之前", "不要之前的上下文",
-        "不要用旧", "清空背景", "全新思考", "不受之前影响",
-        "当作第一次", "就当没聊过", "不用管之前",
-        "不要历史记录", "清除上下文", "清空记忆",
+        "不要旧记忆",
+        "不要之前的记忆",
+        "忘掉之前",
+        "忘记之前",
+        "不要被之前",
+        "不要用之前",
+        "不用之前",
+        "不要之前的上下文",
+        "不要用旧",
+        "清空背景",
+        "全新思考",
+        "不受之前影响",
+        "当作第一次",
+        "就当没聊过",
+        "不用管之前",
+        "不要历史记录",
+        "清除上下文",
+        "清空记忆",
         // English — natural expressions
-        "forget previous", "ignore history", "ignore previous",
-        "clean slate", "fresh start", "no memory",
-        "without context", "without history", "without prior",
-        "don't use previous", "don't use history", "don't use old",
-        "as if we never", "as if it's the first",
+        "forget previous",
+        "ignore history",
+        "ignore previous",
+        "clean slate",
+        "fresh start",
+        "no memory",
+        "without context",
+        "without history",
+        "without prior",
+        "don't use previous",
+        "don't use history",
+        "don't use old",
+        "as if we never",
+        "as if it's the first",
         // Explicit command (least common, but should still work)
         "/fresh",
     ];
@@ -571,7 +612,10 @@ pub(crate) fn force_compress_messages(messages: &mut Vec<ChatMessage>) {
         return;
     }
 
-    let has_system = messages.first().map(|m| m.role == "system").unwrap_or(false);
+    let has_system = messages
+        .first()
+        .map(|m| m.role == "system")
+        .unwrap_or(false);
     let conv_start = if has_system { 1 } else { 0 };
 
     // Conversation slice = everything except the system prompt and the last message.
@@ -649,13 +693,32 @@ pub(crate) fn needs_reflection_tier1(
     let lower_input = user_input.to_lowercase();
     let verification_keywords: &[&str] = &[
         // Chinese
-        "确认", "检查", "验证", "核实", "核查", "检验",
-        "是否完成", "是否成功", "完成了吗", "有没有问题",
+        "确认",
+        "检查",
+        "验证",
+        "核实",
+        "核查",
+        "检验",
+        "是否完成",
+        "是否成功",
+        "完成了吗",
+        "有没有问题",
         // English
-        "verify", "confirm", "make sure", "double check", "double-check",
-        "check if", "check that", "ensure", "validate", "make certain",
+        "verify",
+        "confirm",
+        "make sure",
+        "double check",
+        "double-check",
+        "check if",
+        "check that",
+        "ensure",
+        "validate",
+        "make certain",
     ];
-    if verification_keywords.iter().any(|kw| lower_input.contains(kw)) {
+    if verification_keywords
+        .iter()
+        .any(|kw| lower_input.contains(kw))
+    {
         return true;
     }
 
@@ -707,7 +770,10 @@ async fn tiered_reflect(
     {
         Ok(reply) => {
             let upper = reply.trim().to_uppercase();
-            debug!("Reflection Tier-2 self-check result: {}", &upper[..upper.len().min(10)]);
+            debug!(
+                "Reflection Tier-2 self-check result: {}",
+                &upper[..upper.len().min(10)]
+            );
             upper.starts_with("YES")
         }
         Err(e) => {
@@ -812,7 +878,10 @@ mod tests {
         let history = engine.history.lock().unwrap();
         assert!(history[0].hidden, "old topic messages should be hidden");
         assert!(history[1].hidden, "old topic messages should be hidden");
-        assert!(!history[2].hidden, "current topic message should be visible");
+        assert!(
+            !history[2].hidden,
+            "current topic message should be visible"
+        );
     }
 
     #[test]
@@ -833,76 +902,76 @@ mod tests {
     #[test]
     fn test_detect_context_window_error_openai_patterns() {
         // OpenAI canonical code
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("context_length_exceeded: your prompt is too long")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "context_length_exceeded: your prompt is too long"
+        )));
         // Common plain-English variant
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("This model's context window is 4096 tokens")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "This model's context window is 4096 tokens"
+        )));
         // Maximum context phrasing
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("maximum context length exceeded")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "maximum context length exceeded"
+        )));
         // Request-too-large code
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("request_too_large")
-        ));
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("request too large for model")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "request_too_large"
+        )));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "request too large for model"
+        )));
     }
 
     #[test]
     fn test_detect_context_window_error_anthropic_patterns() {
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("input is too long for this model")
-        ));
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("prompt is too long for claude")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "input is too long for this model"
+        )));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "prompt is too long for claude"
+        )));
     }
 
     #[test]
     fn test_detect_context_window_error_generic_token_patterns() {
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("token limit exceeded in this request")
-        ));
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("1234 tokens exceed the context length")
-        ));
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("context length 4096 exceeded")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "token limit exceeded in this request"
+        )));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "1234 tokens exceed the context length"
+        )));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "context length 4096 exceeded"
+        )));
         // Groq-style
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("request exceeds the model's context length")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "request exceeds the model's context length"
+        )));
     }
 
     #[test]
     fn test_detect_context_window_error_zhipu_pattern() {
         // GLM / Zhipu error format from picoclaw test suite
-        assert!(detect_context_window_error(
-            &anyhow::anyhow!("InvalidParameter: Total tokens of image and text exceed max message tokens")
-        ));
+        assert!(detect_context_window_error(&anyhow::anyhow!(
+            "InvalidParameter: Total tokens of image and text exceed max message tokens"
+        )));
     }
 
     #[test]
     fn test_detect_context_window_error_false_positives() {
         // Normal errors must NOT be mistaken for context errors
-        assert!(!detect_context_window_error(
-            &anyhow::anyhow!("Authentication failed: invalid API key")
-        ));
-        assert!(!detect_context_window_error(
-            &anyhow::anyhow!("rate limit exceeded: 429 too many requests")
-        ));
-        assert!(!detect_context_window_error(
-            &anyhow::anyhow!("network timeout after 30s")
-        ));
-        assert!(!detect_context_window_error(
-            &anyhow::anyhow!("internal server error 500")
-        ));
+        assert!(!detect_context_window_error(&anyhow::anyhow!(
+            "Authentication failed: invalid API key"
+        )));
+        assert!(!detect_context_window_error(&anyhow::anyhow!(
+            "rate limit exceeded: 429 too many requests"
+        )));
+        assert!(!detect_context_window_error(&anyhow::anyhow!(
+            "network timeout after 30s"
+        )));
+        assert!(!detect_context_window_error(&anyhow::anyhow!(
+            "internal server error 500"
+        )));
     }
 
     // ── force_compress_messages tests ─────────────────────────────────────────
@@ -1025,8 +1094,16 @@ mod tests {
     fn test_truncate_helper_ascii_exact_limit() {
         // `truncate` uses byte length as the limit.  For ASCII, bytes == chars.
         let s = "abcdefghij"; // 10 bytes
-        assert_eq!(truncate(s, 10), "abcdefghij", "at-limit ASCII must be unchanged");
-        assert_eq!(truncate(s, 5), "abcde", "over-limit ASCII truncated at byte 5");
+        assert_eq!(
+            truncate(s, 10),
+            "abcdefghij",
+            "at-limit ASCII must be unchanged"
+        );
+        assert_eq!(
+            truncate(s, 5),
+            "abcde",
+            "over-limit ASCII truncated at byte 5"
+        );
     }
 
     #[test]
@@ -1036,9 +1113,15 @@ mod tests {
         let s = "中文Rust"; // 中=3B, 文=3B, R=1, u=1, s=1, t=1 → 10 bytes total
         // Limit of 4 bytes falls mid-character (中=0-2, 文=3-5) — must walk back
         let result = truncate(s, 4);
-        assert!(std::str::from_utf8(result.as_bytes()).is_ok(), "result must be valid UTF-8");
+        assert!(
+            std::str::from_utf8(result.as_bytes()).is_ok(),
+            "result must be valid UTF-8"
+        );
         // The result must be a prefix of the original string
-        assert!(s.starts_with(result), "result must be a valid prefix of the original");
+        assert!(
+            s.starts_with(result),
+            "result must be a valid prefix of the original"
+        );
     }
 
     #[test]
@@ -1079,10 +1162,17 @@ mod tests {
 
         let results = join_all(futures).await;
 
-        assert_eq!(results.len(), 3, "join_all must collect ALL results without short-circuiting");
-        assert!(results[0].is_ok(),  "tool_a must succeed");
+        assert_eq!(
+            results.len(),
+            3,
+            "join_all must collect ALL results without short-circuiting"
+        );
+        assert!(results[0].is_ok(), "tool_a must succeed");
         assert!(results[1].is_err(), "tool_b must fail");
-        assert!(results[2].is_ok(),  "tool_c must succeed even though tool_b failed");
+        assert!(
+            results[2].is_ok(),
+            "tool_c must succeed even though tool_b failed"
+        );
         assert_eq!(results[0].unwrap(), "tool_a: success");
         assert_eq!(results[2].unwrap(), "tool_c: success");
     }
@@ -1119,9 +1209,18 @@ mod tests {
         let call_c = json!({"name": "shell", "arguments": {"command": "ls"}}); // duplicate of a
 
         let mut dedup = std::collections::HashSet::<String>::new();
-        assert!(dedup.insert(call_a.to_string()), "call_a must be inserted (first occurrence)");
-        assert!(dedup.insert(call_b.to_string()), "call_b must be inserted (different args)");
-        assert!(!dedup.insert(call_c.to_string()), "call_c must be rejected (exact duplicate of call_a)");
+        assert!(
+            dedup.insert(call_a.to_string()),
+            "call_a must be inserted (first occurrence)"
+        );
+        assert!(
+            dedup.insert(call_b.to_string()),
+            "call_b must be inserted (different args)"
+        );
+        assert!(
+            !dedup.insert(call_c.to_string()),
+            "call_c must be rejected (exact duplicate of call_a)"
+        );
         assert_eq!(dedup.len(), 2, "only 2 unique calls");
     }
 
@@ -1135,6 +1234,9 @@ mod tests {
 
         let mut dedup = std::collections::HashSet::<String>::new();
         assert!(dedup.insert(call_a.to_string()));
-        assert!(dedup.insert(call_b.to_string()), "different tool names → not a duplicate");
+        assert!(
+            dedup.insert(call_b.to_string()),
+            "different tool names → not a duplicate"
+        );
     }
 }

@@ -284,8 +284,8 @@ mod linux_impl {
 
     /// Add a path-beneath rule to the ruleset.
     fn add_path_rule(ruleset_fd: RawFd, path: &str, allowed_access: u64) -> anyhow::Result<()> {
-        let c_path = CString::new(path)
-            .map_err(|_| anyhow::anyhow!("Path contains null byte: {}", path))?;
+        let c_path =
+            CString::new(path).map_err(|_| anyhow::anyhow!("Path contains null byte: {}", path))?;
 
         let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
 

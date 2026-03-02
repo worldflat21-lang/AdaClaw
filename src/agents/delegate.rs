@@ -15,7 +15,7 @@ use adaclaw_core::channel::{InboundMessage, MessageContent};
 use adaclaw_core::tool::{Tool, ToolResult, ToolSpec};
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -154,7 +154,10 @@ impl Tool for DelegateTool {
             .to_string();
 
         // ── 2. 权限校验 ────────────────────────────────────────────────────────
-        if !self.registry.can_delegate(&self.parent_agent_id, &target_id) {
+        if !self
+            .registry
+            .can_delegate(&self.parent_agent_id, &target_id)
+        {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -251,20 +254,14 @@ impl Tool for DelegateTool {
             let system_msg = InboundMessage {
                 id: Uuid::new_v4(),
                 channel: "system".to_string(),
-                session_id: format!(
-                    "{}\x1E{}",
-                    origin_channel, origin_session
-                ),
+                session_id: format!("{}\x1E{}", origin_channel, origin_session),
                 sender_id: format!("agent:{}", target_id_clone),
                 sender_name: format!("Agent:{}", target_id_clone),
                 content: MessageContent::Text(reply_text),
                 reply_to: None,
                 metadata: {
                     let mut m = HashMap::new();
-                    m.insert(
-                        "task_id".to_string(),
-                        serde_json::Value::String(task_id),
-                    );
+                    m.insert("task_id".to_string(), serde_json::Value::String(task_id));
                     m.insert(
                         "origin_channel".to_string(),
                         serde_json::Value::String(origin_channel),

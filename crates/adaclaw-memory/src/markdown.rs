@@ -42,11 +42,13 @@ impl MarkdownMemory {
 
     fn key_to_path(&self, key: &str) -> PathBuf {
         // Sanitise: strip characters / sequences that could allow path traversal.
-        let safe_key = key
-            .replace(['/', '\\', '\0'], "_")
-            .replace("..", "__");
+        let safe_key = key.replace(['/', '\\', '\0'], "_").replace("..", "__");
         let safe_key = safe_key.trim_matches(|c| c == '_' || c == '.').to_string();
-        let safe_key = if safe_key.is_empty() { "_".to_string() } else { safe_key };
+        let safe_key = if safe_key.is_empty() {
+            "_".to_string()
+        } else {
+            safe_key
+        };
         self.dir.join(format!("{}.md", safe_key))
     }
 
@@ -64,12 +66,12 @@ impl MarkdownMemory {
 
         let content = format!(
             "---\nkey: {key}\ncategory: {cat}\n{session}{topic}created_at: {ts}\nupdated_at: {ts}\n---\n\n{body}\n",
-            key     = entry.key,
-            cat     = cat_str,
+            key = entry.key,
+            cat = cat_str,
             session = session_line,
-            topic   = topic_line,
-            ts      = now,
-            body    = entry.content,
+            topic = topic_line,
+            ts = now,
+            body = entry.content,
         );
 
         std::fs::write(self.key_to_path(&entry.key), content)
@@ -87,12 +89,7 @@ impl MarkdownMemory {
             return vec![];
         };
         rd.flatten()
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|x| x == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
             .filter_map(|e| self.read_entry(&e.path()))
             .collect()
     }
@@ -131,7 +128,10 @@ fn parse_markdown_entry(raw: &str) -> Option<MemoryEntry> {
         return None;
     }
 
-    let content = rest.trim_start_matches('\n').trim_end_matches('\n').to_string();
+    let content = rest
+        .trim_start_matches('\n')
+        .trim_end_matches('\n')
+        .to_string();
 
     Some(MemoryEntry {
         key,
@@ -235,12 +235,11 @@ impl Memory for MarkdownMemory {
             .into_iter()
             .filter(|e| {
                 // Session filter (only for Conversation entries)
-                if e.category == Category::Conversation {
-                    if let Some(sess) = session {
-                        if e.session.as_deref() != Some(sess) {
-                            return false;
-                        }
-                    }
+                if e.category == Category::Conversation
+                    && let Some(sess) = session
+                    && e.session.as_deref() != Some(sess)
+                {
+                    return false;
                 }
                 // Scope filter
                 if !entry_matches_scope(e, &scope) {
@@ -289,15 +288,15 @@ impl Memory for MarkdownMemory {
             .all_entries()
             .into_iter()
             .filter(|e| {
-                if let Some(cat) = category {
-                    if &e.category != cat {
-                        return false;
-                    }
+                if let Some(cat) = category
+                    && &e.category != cat
+                {
+                    return false;
                 }
-                if let Some(sess) = session {
-                    if e.session.as_deref() != Some(sess) {
-                        return false;
-                    }
+                if let Some(sess) = session
+                    && e.session.as_deref() != Some(sess)
+                {
+                    return false;
                 }
                 true
             })
@@ -320,12 +319,7 @@ impl Memory for MarkdownMemory {
         let n = std::fs::read_dir(&self.dir)
             .map(|rd| {
                 rd.flatten()
-                    .filter(|e| {
-                        e.path()
-                            .extension()
-                            .map(|x| x == "md")
-                            .unwrap_or(false)
-                    })
+                    .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
                     .count()
             })
             .unwrap_or(0);
@@ -366,9 +360,15 @@ mod tests {
     #[tokio::test]
     async fn test_store_with_topic() {
         let mem = make_mem();
-        mem.store("k2", "topic content", Category::Conversation, Some("s1"), Some("topic-abc"))
-            .await
-            .unwrap();
+        mem.store(
+            "k2",
+            "topic content",
+            Category::Conversation,
+            Some("s1"),
+            Some("topic-abc"),
+        )
+        .await
+        .unwrap();
         let entry = mem.get("k2").await.unwrap().unwrap();
         assert_eq!(entry.topic, Some("topic-abc".to_string()));
     }
@@ -376,12 +376,24 @@ mod tests {
     #[tokio::test]
     async fn test_recall_full_scope() {
         let mem = make_mem();
-        mem.store("doc1", "the quick brown fox jumps", Category::Daily, None, None)
-            .await
-            .unwrap();
-        mem.store("doc2", "lazy dog sleeps soundly", Category::Daily, None, None)
-            .await
-            .unwrap();
+        mem.store(
+            "doc1",
+            "the quick brown fox jumps",
+            Category::Daily,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        mem.store(
+            "doc2",
+            "lazy dog sleeps soundly",
+            Category::Daily,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let results = mem.recall("fox", 5, None, RecallScope::Full).await.unwrap();
         assert_eq!(results.len(), 1);
@@ -394,7 +406,10 @@ mod tests {
         mem.store("k1", "some content", Category::Core, None, None)
             .await
             .unwrap();
-        let results = mem.recall("content", 10, None, RecallScope::Clean).await.unwrap();
+        let results = mem
+            .recall("content", 10, None, RecallScope::Clean)
+            .await
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -404,25 +419,49 @@ mod tests {
         mem.store("core1", "core fact about fox", Category::Core, None, None)
             .await
             .unwrap();
-        mem.store("conv1", "conversation about fox", Category::Conversation, Some("s1"), Some("t1"))
+        mem.store(
+            "conv1",
+            "conversation about fox",
+            Category::Conversation,
+            Some("s1"),
+            Some("t1"),
+        )
+        .await
+        .unwrap();
+
+        let results = mem
+            .recall("fox", 10, None, RecallScope::FactsOnly)
             .await
             .unwrap();
-
-        let results = mem.recall("fox", 10, None, RecallScope::FactsOnly).await.unwrap();
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
         assert!(keys.contains(&"core1"), "core entries should be included");
-        assert!(!keys.contains(&"conv1"), "conversation entries should be excluded");
+        assert!(
+            !keys.contains(&"conv1"),
+            "conversation entries should be excluded"
+        );
     }
 
     #[tokio::test]
     async fn test_recall_current_topic_filters_conversation() {
         let mem = make_mem();
-        mem.store("conv-t1", "rust topic conv", Category::Conversation, Some("s1"), Some("topic-rust"))
-            .await
-            .unwrap();
-        mem.store("conv-t2", "poem haiku autumn", Category::Conversation, Some("s1"), Some("topic-poem"))
-            .await
-            .unwrap();
+        mem.store(
+            "conv-t1",
+            "rust topic conv",
+            Category::Conversation,
+            Some("s1"),
+            Some("topic-rust"),
+        )
+        .await
+        .unwrap();
+        mem.store(
+            "conv-t2",
+            "poem haiku autumn",
+            Category::Conversation,
+            Some("s1"),
+            Some("topic-poem"),
+        )
+        .await
+        .unwrap();
         // Core entries have no session; markdown recall skips session-filter for
         // non-Conversation categories, so core1 is always reachable.
         // Use content that matches the query ("rust") so the content filter passes.
@@ -430,12 +469,20 @@ mod tests {
             .await
             .unwrap();
 
-        let scope = RecallScope::CurrentTopic { topic_id: "topic-rust".to_string() };
+        let scope = RecallScope::CurrentTopic {
+            topic_id: "topic-rust".to_string(),
+        };
         // Query "rust": matches conv-t1 and core1, but NOT conv-t2 ("poem haiku autumn")
         let results = mem.recall("rust", 10, Some("s1"), scope).await.unwrap();
         let keys: Vec<&str> = results.iter().map(|e| e.key.as_str()).collect();
-        assert!(keys.contains(&"conv-t1"), "rust topic conv should be included");
-        assert!(!keys.contains(&"conv-t2"), "poem topic conv should be excluded");
+        assert!(
+            keys.contains(&"conv-t1"),
+            "rust topic conv should be included"
+        );
+        assert!(
+            !keys.contains(&"conv-t2"),
+            "poem topic conv should be excluded"
+        );
         assert!(keys.contains(&"core1"), "core entries always included");
     }
 
@@ -453,22 +500,41 @@ mod tests {
     async fn test_count() {
         let mem = make_mem();
         assert_eq!(mem.count().await.unwrap(), 0);
-        mem.store("a", "aa", Category::Daily, None, None).await.unwrap();
-        mem.store("b", "bb", Category::Daily, None, None).await.unwrap();
+        mem.store("a", "aa", Category::Daily, None, None)
+            .await
+            .unwrap();
+        mem.store("b", "bb", Category::Daily, None, None)
+            .await
+            .unwrap();
         assert_eq!(mem.count().await.unwrap(), 2);
     }
 
     #[tokio::test]
     async fn test_session_filter() {
         let mem = make_mem();
-        mem.store("s1", "session one", Category::Conversation, Some("s1"), None)
-            .await
-            .unwrap();
-        mem.store("s2", "session two", Category::Conversation, Some("s2"), None)
-            .await
-            .unwrap();
+        mem.store(
+            "s1",
+            "session one",
+            Category::Conversation,
+            Some("s1"),
+            None,
+        )
+        .await
+        .unwrap();
+        mem.store(
+            "s2",
+            "session two",
+            Category::Conversation,
+            Some("s2"),
+            None,
+        )
+        .await
+        .unwrap();
 
-        let r = mem.recall("session", 10, Some("s1"), RecallScope::Full).await.unwrap();
+        let r = mem
+            .recall("session", 10, Some("s1"), RecallScope::Full)
+            .await
+            .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].key, "s1");
     }

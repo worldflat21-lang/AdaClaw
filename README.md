@@ -29,6 +29,7 @@ Run it on your own machine, a $10 ARM board, or a container. It costs nothing be
 |  | OpenClaw | NanoBot | PicoClaw | ZeroClaw | **AdaClaw** |
 |--|--|--|--|--|--|
 | **Language** | TypeScript | Python | Go | Rust | **Rust** |
+| **Deploy deps** | Node.js | Python | None | None | **None** |
 | **RAM** | > 1 GB | > 100 MB | < 10 MB | < 5 MB | **< 5 MB** |
 | **Startup** | > 500 s | > 30 s | < 1 s | < 10 ms | **< 50 ms** |
 | **Multi-Agent** | ✅ | ✅ | ✅ | ❌ | ✅ config-driven + async delegate |
@@ -105,10 +106,10 @@ cargo build --release
 
 | Platform | Method |
 |--|--|
-| Linux / macOS | `curl -fsSL https://…/install.sh \| bash` |
-| Windows (PowerShell) | `irm https://…/install.ps1 \| iex` |
+| Linux / macOS | `curl -fsSL https://raw.githubusercontent.com/worldflat21-lang/AdaClaw/main/scripts/install.sh \| bash` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/worldflat21-lang/AdaClaw/main/scripts/install.ps1 \| iex` |
 | macOS Homebrew | `brew tap worldflat21-lang/adaclaw && brew install adaclaw` |
-| Any platform | `cargo install --git https://github.com/worldflat21-lang/AdaClaw` |
+| Any platform | `cargo install --locked --git https://github.com/worldflat21-lang/AdaClaw` |
 
 Pre-compiled binaries for `x86_64`, `aarch64`, and `armv7` (Linux/macOS) are published on each release.
 
@@ -152,10 +153,10 @@ The bundled `docker-compose.yml` is hardened: read-only rootfs, dropped capabili
 | **Anthropic** | Claude Sonnet, Opus, … | Native tool-calling |
 | **Google Gemini** | Gemini Flash, Pro, … | OpenAI-compat |
 | **Grok (xAI)** | Grok-2, Grok-3, … | OpenAI-compat |
-| **DeepSeek** | deepseek-chat, deepseek-reasoner, … | Cost-efficient |
+| **DeepSeek** | deepseek-chat, deepseek-reasoner, DeepSeek-V3, DeepSeek-R1, … | Cost-efficient |
 | **Ollama** | llama3, mistral, qwen, … | Fully local — no API key |
-| **Qwen (Alibaba)** | qwen-max, qwen-plus, … | OpenAI-compat |
-| **Kimi (Moonshot)** | moonshot-v1-*, … | OpenAI-compat |
+| **Qwen (Alibaba)** | qwen-max, qwen-plus, qwen2.5-*, … | OpenAI-compat |
+| **Kimi (Moonshot)** | kimi-latest, kimi-k1.5, moonshot-v1-*, … | OpenAI-compat |
 | **GLM (Zhipu)** | glm-4, glm-4-flash, … | OpenAI-compat |
 | **Any OpenAI-compat** | — | Custom `api_base` |
 
@@ -270,6 +271,21 @@ cargo clippy -- -D warnings
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch conventions and how to add a new channel, provider, or memory backend.
+
+---
+
+## Troubleshooting
+
+### Windows: Script execution blocked by policy
+
+If you see an error like `running scripts is disabled on this system`, run the following in PowerShell **before** installing:
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+irm https://raw.githubusercontent.com/worldflat21-lang/AdaClaw/main/scripts/install.ps1 | iex
+```
+
+This sets the execution policy for the current session only — it does not change system-wide settings.
 
 ---
 

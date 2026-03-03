@@ -166,15 +166,21 @@ The bundled `docker-compose.yml` is hardened: read-only rootfs, dropped capabili
 
 ## Highlights
 
+### ⚡ Performance & Lightweight
+
+Single Rust binary, no runtime dependencies. RAM footprint < 5 MB, cold-start < 50 ms — runs comfortably on a Raspberry Pi, an old laptop, or a $5 VPS. Compiled with `opt-level = "z"` for maximum size and speed efficiency.
+
 ### 🧠 RRF Hybrid Memory
 
 FTS5 keyword search + local vector embeddings (FastEmbed, AllMiniLML6v2, 384-dim, zero API cost) merged via **Reciprocal Rank Fusion**. Automatic topic-shift detection prunes stale context before each recall. No external embedding service needed.
 
-### 🔌 Native MCP Support
+### 🧩 Modularity & Native Ecosystem Support
 
-[Model Context Protocol](https://modelcontextprotocol.io/) over both **stdio** and **HTTP/SSE** transports, Claude Desktop config-compatible. Any MCP server added to `config.toml` becomes a first-class tool for every agent — no glue code required.
+#### 🔌 Native MCP Support
 
-### 📨 Message Bus Decoupling
+[Model Context Protocol](https://modelcontextprotocol.io/) over both **stdio** and **HTTP/SSE** transports, Claude Desktop config-compatible. Any MCP server added to `config.toml` becomes a first-class tool for every agent — plug in GitHub, browser automation, or any database via MCP Server, no glue code required.
+
+#### 📨 Message Bus Decoupling
 
 `mpsc` point-to-point + `broadcast` dual bus. Channels and Agents are fully decoupled — adding a new integration requires zero changes to existing code.
 
@@ -182,7 +188,7 @@ FTS5 keyword search + local vector embeddings (FastEmbed, AllMiniLML6v2, 384-dim
 
 `ReliabilityChain` sequences N providers by priority. On sustained failure the breaker opens (exponential backoff: 1/5/25/60 min), then half-opens to probe recovery. Agents never stall on a dead provider.
 
-### 🔒 7-Layer Security
+### 🛡️ Industrial-Grade Security (7-Layer Defense)
 
 ```
 Layer 1  Network       Gateway binds 127.0.0.1 by default; refuses 0.0.0.0 without tunnel
@@ -196,11 +202,13 @@ Layer 7  Emergency     4-level estop (KillAll / NetworkKill / DomainBlock / Tool
 
 Rate limiting, ChaCha20-Poly1305 secret storage, and JSONL audit log (SIEM-ready) are always on.
 
-### 🏗️ Trait-Driven Architecture
+### 🏗️ Pluggable Architecture — Swap Anything, Break Nothing
 
-Every subsystem (`Provider`, `Channel`, `Memory`, `Tool`, `Observer`, `Tunnel`) is a Rust trait. Swap an implementation with one config line. Add a new one without touching existing code. Each crate — `adaclaw-core`, `adaclaw-providers`, `adaclaw-memory`, `adaclaw-security`, `adaclaw-channels` — is independently versioned and testable.
+Switch your LLM provider, messaging channel, or memory backend with a single config change — no recompilation, no side effects on other subsystems. Every subsystem (`Provider`, `Channel`, `Memory`, `Tool`, `Observer`, `Tunnel`) is a Rust trait; each crate — `adaclaw-core`, `adaclaw-providers`, `adaclaw-memory`, `adaclaw-security`, `adaclaw-channels` — is independently versioned and testable.
 
-### 🤝 Multi-Agent Delegation
+### 🤝 Multi-Agent Delegation — Parallel Brains, One Conversation
+
+Assign specialized sub-agents to complex tasks. While your orchestrating agent stays responsive in chat, worker agents run file edits, shell commands, or research tasks **in parallel** — all coordinated via config, no custom orchestration code needed.
 
 ```toml
 [agents.assistant]

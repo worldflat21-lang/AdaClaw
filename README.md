@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/Ada103iow103.png" width="160" alt="AdaClaw">
   <h1>AdaClaw ⚡</h1>
-  <p><strong>Lightweight · Secure · Multi-channel · Multi-Agent AI Agent Runtime in Rust</strong></p>
+  <p><strong>A Lightweight and Efficient Personal AI Assistant in Rust</strong></p>
   <p>
     <a href="https://github.com/worldflat21-lang/AdaClaw/actions/workflows/ci.yml">
       <img src="https://github.com/worldflat21-lang/AdaClaw/actions/workflows/ci.yml/badge.svg" alt="CI">
@@ -18,9 +18,9 @@
   <p><a href="README.zh.md">中文</a></p>
 </div>
 
-AdaClaw is an open-source **AI Agent Runtime** — a single Rust binary that wires your LLM of choice to the channels you already use (Telegram, Discord, Slack, DingTalk, Feishu, WeCom, and more), backed by a hybrid memory engine and a 7-layer security system.
+AdaClaw is an open-source **Personal AI Assistant**. Packaged as a single Rust binary, it seamlessly connects your LLM of choice to the channels you already use (Telegram, Discord, Slack, DingTalk, Feishu, WeCom, and more), backed by a built-in hybrid memory engine and a 7-layer security system.
 
-Run it on your own machine, a $10 ARM board, or a container. It costs nothing beyond LLM API calls, keeps all data local, and never phones home.
+You can run it on your own machine, a $10 ARM board, or within a container. It costs nothing beyond the LLM API calls, keeps all your data strictly local, and never phones home.
 
 ---
 

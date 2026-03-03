@@ -10,6 +10,7 @@
 use adaclaw_core::memory::Memory;
 use adaclaw_core::provider::Provider;
 use adaclaw_core::tool::Tool;
+use adaclaw_memory::session_store::SessionStore;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -78,8 +79,11 @@ impl SessionManager {
 
     /// 获取或创建指定 `session_id` 的 `AgentEngine`。
     ///
-    /// - 首次调用（新 session）：创建新 engine，若提供 `memory` 则调用 `.with_memory()` 附加记忆后端。
+    /// - 首次调用（新 session）：创建新 engine，若提供 `memory` / `session_store` 则附加。
     /// - 后续调用（已有 session）：返回同一 engine 的 `Arc` 引用，历史记录完整保留。
+    ///
+    /// 当 `session_store` 提供时，engine 会在创建时自动从 SQLite 恢复历史（记忆续传），
+    /// 并在后续每次 `push_history()` 时异步写入 SQLite。
     ///
     /// 返回 `Arc<AsyncMutex<AgentEngine>>`：
     /// - `Arc` 允许在 `tokio::spawn` 闭包中跨线程持有
@@ -88,16 +92,21 @@ impl SessionManager {
         &self,
         session_id: &str,
         memory: Option<Arc<dyn Memory>>,
+        session_store: Option<Arc<SessionStore>>,
     ) -> Arc<AsyncMutex<AgentEngine>> {
         let mut sessions = self.sessions.lock().unwrap();
         sessions
             .entry(session_id.to_string())
             .or_insert_with(|| {
-                let engine = if let Some(mem) = memory {
-                    AgentEngine::new().with_memory(mem, session_id.to_string())
-                } else {
-                    AgentEngine::new()
-                };
+                // Build engine: attach memory first (sets session_id), then
+                // attach session_store (which reads session_id for SQLite restore).
+                let mut engine = AgentEngine::new();
+                if let Some(mem) = memory {
+                    engine = engine.with_memory(mem, session_id.to_string());
+                }
+                if let Some(store) = session_store {
+                    engine = engine.with_session_store(store);
+                }
                 Arc::new(AsyncMutex::new(engine))
             })
             .clone()
@@ -159,6 +168,12 @@ pub struct AgentInstance {
 
     /// 会话管理器（按 session_id 隔离，留作后续扩展）。
     pub session_manager: SessionManager,
+
+    /// 对话历史持久化存储（可选）。
+    ///
+    /// 注入后，`get_or_create_engine()` 会在创建新 engine 时自动调用
+    /// `AgentEngine::with_session_store()`，从 SQLite 恢复历史并启用写入持久化。
+    pub session_store: Option<Arc<SessionStore>>,
 }
 
 impl AgentInstance {
@@ -209,7 +224,7 @@ impl AgentInstance {
             agent_id: agent_id.to_string(),
             provider,
             tool_registry,
-            memory: None, // 由调用方通过 with_memory() 或 daemon 注入
+            memory: None,       // 由调用方通过 with_memory() 或 daemon 注入
             allowed_tools: config.tools.clone(),
             allow_delegate: config.subagents.allow.clone(),
             workspace,
@@ -218,6 +233,7 @@ impl AgentInstance {
             max_iterations: config.max_iterations,
             system_extra: config.system_extra.clone(),
             session_manager: SessionManager::new(),
+            session_store: None, // 由调用方通过 with_session_store() 注入
         })
     }
 
@@ -242,6 +258,15 @@ impl AgentInstance {
         self
     }
 
+    /// 附加 SessionStore（builder 风格，供 daemon 在构建后注入）。
+    ///
+    /// 注入后，此 Agent 的所有新 session 在第一次调用 `get_or_create_engine()` 时
+    /// 会自动从 SQLite 恢复历史，并在后续每轮对话结束后异步写入 SQLite。
+    pub fn with_session_store(mut self, store: Arc<SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
     /// 返回此 Agent 是否允许委托任务给其他 Agent。
     pub fn can_delegate(&self) -> bool {
         !self.allow_delegate.is_empty()
@@ -249,8 +274,8 @@ impl AgentInstance {
 
     /// 获取或创建指定 `session_id` 的持久 `AgentEngine`。
     ///
-    /// 这是 P0-1 + P0-2 修复的核心入口：
-    /// - 首次调用会创建新 engine 并附加 `memory`（若提供）
+    /// - 首次调用会创建新 engine，自动附加 `memory` 和 `session_store`（若已注入）
+    /// - `session_store` 触发从 SQLite 恢复历史（记忆续传）
     /// - 后续调用返回同一 engine，保留全部对话历史
     ///
     /// 返回的 `Arc<AsyncMutex<AgentEngine>>` 可安全传入 `tokio::spawn`；
@@ -260,7 +285,11 @@ impl AgentInstance {
         session_id: &str,
         memory: Option<Arc<dyn Memory>>,
     ) -> Arc<AsyncMutex<AgentEngine>> {
-        self.session_manager.get_or_create(session_id, memory)
+        self.session_manager.get_or_create(
+            session_id,
+            memory,
+            self.session_store.clone(),
+        )
     }
 }
 

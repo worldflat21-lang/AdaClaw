@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/Ada103iow103.png" width="160" alt="AdaClaw">
   <h1>AdaClaw ⚡</h1>
-  <p><strong>轻量 · 安全 · 多渠道 · 多 Agent 的 Rust AI Agent 运行时</strong></p>
+  <p><strong>轻量高效的 Rust AI 个人助手</strong></p>
   <p>
     <a href="https://github.com/worldflat21-lang/AdaClaw/actions/workflows/ci.yml">
       <img src="https://github.com/worldflat21-lang/AdaClaw/actions/workflows/ci.yml/badge.svg" alt="CI">
@@ -18,9 +18,9 @@
   <p><a href="README.md">English</a></p>
 </div>
 
-AdaClaw 是一个开源 **AI Agent 运行时**——单个 Rust 二进制文件，将你选择的大模型与你日常使用的渠道（Telegram、Discord、Slack、钉钉、飞书、企业微信等）连接起来，内置混合记忆引擎和 7 层安全体系。
+AdaClaw 是一款开源的**轻量高效 AI 个人助手**。它打包为一个极简的 Rust 二进制文件，将你选择的大模型与你日常使用的渠道（Telegram、Discord、Slack、钉钉、飞书、企业微信等）无缝连接，并内置了混合记忆引擎和 7 层安全防护体系。
 
-部署在自己的机器、树莓派，或者容器里。除大模型 API 调用本身，无任何额外费用；所有数据留在本地，不做任何回传。
+你可以将它部署在个人电脑、树莓派或 Docker 容器中。除了大模型 API 自身的调用费用外，没有任何额外开销；所有数据完全保存在本地，绝不向外回传。
 
 ---
 

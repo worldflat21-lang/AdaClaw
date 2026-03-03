@@ -190,6 +190,64 @@ impl SessionStore {
             .collect::<std::result::Result<Vec<String>, _>>()?;
         Ok(ids)
     }
+
+    // ── Synchronous variants (for use in non-async contexts) ──────────────────
+
+    /// 同步版本的 `append`，用于无法使用 `.await` 的上下文（如 `AgentEngine::push_history`）。
+    pub fn append_sync(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("lock error: {}", e))?;
+        conn.execute(
+            "INSERT INTO sessions (session_id, role, content) VALUES (?1, ?2, ?3)",
+            params![session_id, role, content],
+        )?;
+        Ok(())
+    }
+
+    /// 同步版本的 `load`，用于 `AgentEngine` 初始化时从 SQLite 恢复对话历史。
+    ///
+    /// 返回最新的 `limit` 条记录（按时序升序），与异步版本行为完全一致。
+    pub fn load_sync(&self, session_id: &str, limit: usize) -> Result<Vec<SessionEntry>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("lock error: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, created_at
+             FROM (
+                 SELECT id, session_id, role, content, created_at
+                 FROM sessions
+                 WHERE session_id = ?1
+                 ORDER BY id DESC
+                 LIMIT ?2
+             ) sub
+             ORDER BY id ASC",
+        )?;
+        let entries = stmt
+            .query_map(params![session_id, limit as i64], |row| {
+                Ok(SessionEntry {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(entries)
+    }
+
+    /// 同步版本的 `compact`，用于 `AgentEngine` 在滚动压缩后写入摘要检查点。
+    pub fn compact_sync(&self, session_id: &str, summary: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("lock error: {}", e))?;
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
+        conn.execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "INSERT INTO sessions (session_id, role, content) VALUES (?1, 'system', ?2)",
+            params![session_id, summary],
+        )?;
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    }
 }
 
 // ── 单元测试 ──────────────────────────────────────────────────────────────────

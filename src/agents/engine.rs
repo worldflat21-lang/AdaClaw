@@ -1,6 +1,7 @@
 use adaclaw_core::memory::{Category, Memory, RecallScope};
 use adaclaw_core::provider::{ChatMessage, ChatRequest, Provider};
 use adaclaw_core::tool::Tool;
+use adaclaw_memory::session_store::SessionStore;
 use anyhow::{Result, anyhow};
 use futures_util::future::join_all;
 use std::collections::HashSet;
@@ -56,6 +57,12 @@ impl MessageEntry {
 
 // ── AgentEngine ───────────────────────────────────────────────────────────────
 
+/// Maximum number of messages to restore from SQLite on session resumption.
+///
+/// Matches `HARD_MAX_HISTORY` in `compact.rs` — no point restoring more than
+/// we would keep in memory.
+const SESSION_RESTORE_LIMIT: usize = 60;
+
 pub struct AgentEngine {
     /// Optional memory backend for conversation indexing.
     memory: Option<Arc<dyn Memory>>,
@@ -67,6 +74,14 @@ pub struct AgentEngine {
     /// Full conversation history across all turns (includes hidden entries).
     /// Arc<Mutex<...>> so it can be shared across async calls if needed.
     history: std::sync::Mutex<Vec<MessageEntry>>,
+    /// Optional session store for durable conversation history persistence.
+    ///
+    /// When set:
+    /// - `push_history()` asynchronously appends each message to SQLite.
+    /// - `with_session_store()` pre-populates `history` from SQLite on first load.
+    /// - After `rolling_compact` produces a summary, the store is compacted so
+    ///   the next process restart only needs to load the summary + recent tail.
+    session_store: Option<Arc<SessionStore>>,
 }
 
 impl Default for AgentEngine {
@@ -82,6 +97,7 @@ impl AgentEngine {
             session_id: "default".to_string(),
             topic_manager: adaclaw_memory::topic::TopicManager::new(),
             history: std::sync::Mutex::new(vec![]),
+            session_store: None,
         }
     }
 
@@ -89,6 +105,53 @@ impl AgentEngine {
     pub fn with_memory(mut self, memory: Arc<dyn Memory>, session_id: impl Into<String>) -> Self {
         self.memory = Some(memory);
         self.session_id = session_id.into();
+        self
+    }
+
+    /// Attach a `SessionStore` for durable conversation history persistence.
+    ///
+    /// Must be called **after** `with_memory()` so that `self.session_id` is
+    /// already set to the correct value.
+    ///
+    /// On attachment, existing history for this session is loaded from SQLite
+    /// and pre-populated into `self.history`.  This is the "记忆续传" (memory
+    /// resumption) path — a process restart will restore the conversation
+    /// exactly where it left off (up to `SESSION_RESTORE_LIMIT` messages).
+    ///
+    /// If the most recent stored entry is a `[Conversation summary]` (written
+    /// by a previous `rolling_compact` pass), it is restored as a `system`
+    /// role entry, giving the LLM the same compressed context it had before
+    /// the restart.
+    pub fn with_session_store(mut self, store: Arc<SessionStore>) -> Self {
+        match store.load_sync(&self.session_id, SESSION_RESTORE_LIMIT) {
+            Ok(entries) if !entries.is_empty() => {
+                let mut history = self.history.lock().unwrap();
+                for entry in &entries {
+                    history.push(MessageEntry {
+                        role: entry.role.clone(),
+                        content: entry.content.clone(),
+                        topic_id: "default".to_string(),
+                        hidden: false,
+                    });
+                }
+                debug!(
+                    session_id = %self.session_id,
+                    restored = entries.len(),
+                    "Session history restored from SQLite"
+                );
+            }
+            Ok(_) => {
+                // No prior history — new session, that's fine.
+            }
+            Err(e) => {
+                warn!(
+                    session_id = %self.session_id,
+                    error = %e,
+                    "Failed to restore session history from SQLite, starting fresh"
+                );
+            }
+        }
+        self.session_store = Some(store);
         self
     }
 
@@ -198,11 +261,49 @@ impl AgentEngine {
             // (ROLLING_THRESHOLD=30), then hard-trim as safety net (HARD_MAX=60).
             // Falls back to hard-trim gracefully if the LLM summary call fails.
             // Reference: picoclaw maybeSummarize + zeroclaw auto_compact_history.
+            //
+            // ── Compaction → SessionStore sync ─────────────────────────────────
+            // Detect whether a NEW summary is produced by rolling_compact so we
+            // can persist it to SQLite.  The marker is `messages[1]` starting with
+            // `[Conversation summary]`.  We snapshot the state *before* to tell
+            // apart a freshly-written summary from one that was already there.
+            let had_summary_before =
+                messages.get(1).map_or(false, |m| m.content.starts_with("[Conversation summary]"));
+
             if let Err(e) =
                 crate::agents::compact::auto_compact_history(&mut messages, provider, model).await
             {
                 warn!(error = %e, "auto_compact_history failed, applying hard trim");
                 crate::agents::compact::trim_history(&mut messages);
+            }
+
+            // If a new summary was just inserted, persist it to the SessionStore so
+            // the next process restart can restore the compressed context directly.
+            let has_new_summary = !had_summary_before
+                && messages
+                    .get(1)
+                    .map_or(false, |m| m.content.starts_with("[Conversation summary]"));
+
+            if has_new_summary {
+                if let Some(store) = &self.session_store {
+                    let summary = messages[1].content.clone();
+                    let store = Arc::clone(store);
+                    let session_id = self.session_id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = store.compact(&session_id, &summary).await {
+                            warn!(
+                                session_id = %session_id,
+                                error = %e,
+                                "Failed to persist compaction summary to SessionStore"
+                            );
+                        } else {
+                            debug!(
+                                session_id = %session_id,
+                                "Compaction summary persisted to SessionStore"
+                            );
+                        }
+                    });
+                }
             }
 
             // Call LLM with retry on context-window errors (max 2 retries).
@@ -365,8 +466,33 @@ impl AgentEngine {
 
     // ── History management ────────────────────────────────────────────────────
 
+    /// Append a message to the in-memory history and, if a `SessionStore` is
+    /// attached, asynchronously persist it to SQLite (fire-and-forget).
+    ///
+    /// The write is performed via `tokio::spawn` so it never blocks the LLM
+    /// call loop.  In the rare event that the spawn fails (e.g. Tokio runtime
+    /// already shutting down), the message is still in memory for this run.
     fn push_history(&self, entry: MessageEntry) {
-        self.history.lock().unwrap().push(entry);
+        self.history.lock().unwrap().push(entry.clone());
+
+        // Persist to SessionStore asynchronously — same pattern as
+        // `StateManager::update_last_active()` (fire-and-forget, WAL-safe).
+        if let Some(store) = &self.session_store {
+            let store = Arc::clone(store);
+            let session_id = self.session_id.clone();
+            let role = entry.role.clone();
+            let content = entry.content.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store.append(&session_id, &role, &content).await {
+                    warn!(
+                        session_id = %session_id,
+                        role = %role,
+                        error = %e,
+                        "Failed to persist message to SessionStore"
+                    );
+                }
+            });
+        }
     }
 
     /// Get all non-hidden messages as `ChatMessage` for LLM consumption.

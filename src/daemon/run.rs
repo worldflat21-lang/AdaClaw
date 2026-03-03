@@ -274,6 +274,35 @@ pub async fn start_daemon() -> Result<()> {
         Arc::new(vec![])
     };
 
+    // ── 5b. SessionStore — 对话历史持久化 ─────────────────────────────────────
+    //
+    // 独立于 Memory 后端（Memory 用于语义检索，SessionStore 用于顺序历史恢复）。
+    // 存储于 workspace/sessions.db，使用 WAL 模式保证写入可靠性。
+    // 进程重启后，AgentEngine 会自动从此 DB 恢复对话历史（"记忆续传"）。
+    let sessions_db_path = {
+        let ws = config.security.workspace.as_deref().unwrap_or("workspace");
+        std::path::Path::new(ws).join("sessions.db")
+    };
+    let session_store = Arc::new(
+        adaclaw_memory::session_store::SessionStore::new(
+            &sessions_db_path.to_string_lossy(),
+        )
+        .unwrap_or_else(|e| {
+            warn!(
+                path = %sessions_db_path.display(),
+                error = %e,
+                "Failed to open sessions.db, falling back to in-memory SessionStore \
+                 (conversation history will NOT persist across restarts)"
+            );
+            adaclaw_memory::session_store::SessionStore::new_in_memory()
+                .expect("in-memory SessionStore always succeeds")
+        }),
+    );
+    info!(
+        path = %sessions_db_path.display(),
+        "SessionStore initialized (conversation history persistence enabled)"
+    );
+
     // ── 6. 构建 AgentRegistry（含 AgentInstance） ──────────────────────────────
     let mut agents_map = config.agents.clone();
     if !agents_map.contains_key("assistant") {
@@ -304,7 +333,10 @@ pub async fn start_daemon() -> Result<()> {
                 // 注入记忆后端：memory_store / memory_recall / memory_forget 工具
                 // 通过 with_memory() 将 Arc<dyn Memory> 传入 AgentInstance，
                 // build_tools() 调用时会将其透传给三个 memory 工具。
-                let instance = instance.with_memory(Arc::clone(&memory));
+                let instance = instance
+                    .with_memory(Arc::clone(&memory))
+                    // 注入 SessionStore：对话历史持久化 + 进程重启后自动恢复
+                    .with_session_store(Arc::clone(&session_store));
                 info!(
                     agent_id = %agent_id,
                     model = %agent_cfg.model,
@@ -326,7 +358,10 @@ pub async fn start_daemon() -> Result<()> {
         if let Some(provider) = providers.values().next().cloned() {
             let cfg = AgentConfig::default();
             if let Ok(inst) = AgentInstance::new("assistant", &cfg, provider) {
-                registry.insert(inst.with_memory(Arc::clone(&memory)));
+                registry.insert(
+                    inst.with_memory(Arc::clone(&memory))
+                        .with_session_store(Arc::clone(&session_store)),
+                );
             }
         }
     }

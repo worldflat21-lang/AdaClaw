@@ -267,8 +267,9 @@ impl AgentEngine {
             // can persist it to SQLite.  The marker is `messages[1]` starting with
             // `[Conversation summary]`.  We snapshot the state *before* to tell
             // apart a freshly-written summary from one that was already there.
-            let had_summary_before =
-                messages.get(1).map_or(false, |m| m.content.starts_with("[Conversation summary]"));
+            let had_summary_before = messages
+                .get(1)
+                .is_some_and(|m| m.content.starts_with("[Conversation summary]"));
 
             if let Err(e) =
                 crate::agents::compact::auto_compact_history(&mut messages, provider, model).await
@@ -282,28 +283,26 @@ impl AgentEngine {
             let has_new_summary = !had_summary_before
                 && messages
                     .get(1)
-                    .map_or(false, |m| m.content.starts_with("[Conversation summary]"));
+                    .is_some_and(|m| m.content.starts_with("[Conversation summary]"));
 
-            if has_new_summary {
-                if let Some(store) = &self.session_store {
-                    let summary = messages[1].content.clone();
-                    let store = Arc::clone(store);
-                    let session_id = self.session_id.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = store.compact(&session_id, &summary).await {
-                            warn!(
-                                session_id = %session_id,
-                                error = %e,
-                                "Failed to persist compaction summary to SessionStore"
-                            );
-                        } else {
-                            debug!(
-                                session_id = %session_id,
-                                "Compaction summary persisted to SessionStore"
-                            );
-                        }
-                    });
-                }
+            if has_new_summary && let Some(store) = &self.session_store {
+                let summary = messages[1].content.clone();
+                let store = Arc::clone(store);
+                let session_id = self.session_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = store.compact(&session_id, &summary).await {
+                        warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "Failed to persist compaction summary to SessionStore"
+                        );
+                    } else {
+                        debug!(
+                            session_id = %session_id,
+                            "Compaction summary persisted to SessionStore"
+                        );
+                    }
+                });
             }
 
             // Call LLM with retry on context-window errors (max 2 retries).

@@ -224,7 +224,7 @@ impl AgentInstance {
             agent_id: agent_id.to_string(),
             provider,
             tool_registry,
-            memory: None,       // 由调用方通过 with_memory() 或 daemon 注入
+            memory: None, // 由调用方通过 with_memory() 或 daemon 注入
             allowed_tools: config.tools.clone(),
             allow_delegate: config.subagents.allow.clone(),
             workspace,
@@ -285,11 +285,8 @@ impl AgentInstance {
         session_id: &str,
         memory: Option<Arc<dyn Memory>>,
     ) -> Arc<AsyncMutex<AgentEngine>> {
-        self.session_manager.get_or_create(
-            session_id,
-            memory,
-            self.session_store.clone(),
-        )
+        self.session_manager
+            .get_or_create(session_id, memory, self.session_store.clone())
     }
 }
 

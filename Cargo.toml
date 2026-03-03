@@ -27,7 +27,7 @@ expect_used = "allow"
 version = "0.1.2"
 edition = "2024"
 authors = ["AdaClaw Contributors"]
-description = "Lightweight, secure, multi-channel Rust AI Agent Runtime"
+description = "⚡ High-performance Rust AI assistant | <5MB footprint | Enterprise-grade security | Multi-channel | Fully local data"
 license = "Apache-2.0"
 repository = "https://github.com/worldflat21-lang/AdaClaw"
 

@@ -284,19 +284,17 @@ pub async fn start_daemon() -> Result<()> {
         std::path::Path::new(ws).join("sessions.db")
     };
     let session_store = Arc::new(
-        adaclaw_memory::session_store::SessionStore::new(
-            &sessions_db_path.to_string_lossy(),
-        )
-        .unwrap_or_else(|e| {
-            warn!(
-                path = %sessions_db_path.display(),
-                error = %e,
-                "Failed to open sessions.db, falling back to in-memory SessionStore \
-                 (conversation history will NOT persist across restarts)"
-            );
-            adaclaw_memory::session_store::SessionStore::new_in_memory()
-                .expect("in-memory SessionStore always succeeds")
-        }),
+        adaclaw_memory::session_store::SessionStore::new(&sessions_db_path.to_string_lossy())
+            .unwrap_or_else(|e| {
+                warn!(
+                    path = %sessions_db_path.display(),
+                    error = %e,
+                    "Failed to open sessions.db, falling back to in-memory SessionStore \
+                     (conversation history will NOT persist across restarts)"
+                );
+                adaclaw_memory::session_store::SessionStore::new_in_memory()
+                    .expect("in-memory SessionStore always succeeds")
+            }),
     );
     info!(
         path = %sessions_db_path.display(),

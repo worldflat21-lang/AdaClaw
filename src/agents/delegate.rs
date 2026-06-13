@@ -221,6 +221,7 @@ impl Tool for DelegateTool {
                     temperature,
                     system_extra.as_deref(),
                     Some(max_iterations),
+                    &[],
                 ),
             )
             .await;

@@ -40,6 +40,20 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// An image attached to a (user) message, for vision-capable models.
+///
+/// Stored already base64-encoded with its MIME type so providers can embed it
+/// directly (OpenAI `image_url` data URL / Anthropic `image` source block)
+/// without re-encoding.  Not persisted to durable history — images are
+/// per-turn context, not long-term memory.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ImageData {
+    /// MIME type, e.g. `"image/png"` or `"image/jpeg"`.
+    pub media_type: String,
+    /// Base64-encoded image bytes (no `data:` prefix).
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -51,6 +65,9 @@ pub struct ChatMessage {
     /// the [`ToolCall`] it answers. `role` should be `"tool"` in that case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Images attached to this (user) message, for vision-capable providers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageData>,
 }
 
 impl ChatMessage {
@@ -61,6 +78,18 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            images: Vec::new(),
+        }
+    }
+
+    /// A user turn carrying one or more images alongside its text.
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageData>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            images,
         }
     }
 
@@ -71,6 +100,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: calls,
             tool_call_id: None,
+            images: Vec::new(),
         }
     }
 
@@ -81,6 +111,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
+            images: Vec::new(),
         }
     }
 }

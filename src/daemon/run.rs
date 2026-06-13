@@ -36,6 +36,7 @@ use adaclaw_security::{
 };
 use adaclaw_server::server::start_server;
 use anyhow::Result;
+use base64::Engine as _;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -887,11 +888,28 @@ async fn agent_dispatch_loop(
                     logger.log_message(&msg.channel, &msg.sender_id, &preview);
                 }
 
-                // ── 提取文本内容 ──────────────────────────────────────────────
-                let text = match &msg.content {
-                    MessageContent::Text(t) => t.clone(),
-                    _ => {
-                        warn!(sender = %msg.sender_id, "Non-text message received, ignoring");
+                // ── 提取文本 + 可选图片 ────────────────────────────────────────
+                // Text passes through. An Image becomes a vision attachment (its
+                // caption, if any, rides in metadata["caption"]). Audio/File are
+                // not yet wired end-to-end (see follow-ups) and are skipped.
+                let (text, image_bytes): (String, Option<Vec<u8>>) = match &msg.content {
+                    MessageContent::Text(t) => (t.clone(), None),
+                    MessageContent::Image(bytes) => {
+                        let caption = msg
+                            .metadata
+                            .get("caption")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (caption, Some(bytes.clone()))
+                    }
+                    other => {
+                        let kind = match other {
+                            MessageContent::Audio(_) => "audio",
+                            MessageContent::File { .. } => "file",
+                            _ => "non-text",
+                        };
+                        warn!(sender = %msg.sender_id, kind, "Unsupported message content, ignoring");
                         continue;
                     }
                 };
@@ -911,6 +929,31 @@ async fn agent_dispatch_loop(
                             }
                         }
                     }
+                };
+
+                // ── Vision：把图片字节转成模型可用的附件 ──────────────────────
+                // 只有声明 vision 能力的 provider 才会收到图片；否则保留文本并
+                // 追加一句说明，避免用户发了图却得到沉默。
+                let mut text = text;
+                let images: Vec<adaclaw_core::provider::ImageData> = match image_bytes {
+                    Some(bytes) if instance.provider.supports_vision() => {
+                        vec![adaclaw_core::provider::ImageData {
+                            media_type: detect_image_media_type(&bytes).to_string(),
+                            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                        }]
+                    }
+                    Some(_) => {
+                        let note = "(An image was attached, but the current model cannot \
+                                    process images.)";
+                        if text.is_empty() {
+                            text = note.to_string();
+                        } else {
+                            text.push_str("\n\n");
+                            text.push_str(note);
+                        }
+                        Vec::new()
+                    }
+                    None => Vec::new(),
                 };
 
                 // ── 构建工具列表：基础工具 + MCP 工具 + 可选 DelegateTool ────
@@ -1003,6 +1046,7 @@ async fn agent_dispatch_loop(
                             temperature,
                             Some(system_prompt.as_str()),
                             Some(max_iterations),
+                            &images,
                         )
                         .await;
                     drop(engine); // 显式释放锁，让其他 session 消息可继续处理
@@ -1107,6 +1151,27 @@ async fn agent_dispatch_loop(
     }
 }
 
+// ── Image helpers ─────────────────────────────────────────────────────────────
+
+/// Detect an image's MIME type from its leading magic bytes.
+///
+/// `MessageContent::Image` carries only raw bytes (no MIME type), but both the
+/// OpenAI and Anthropic APIs require one alongside base64 image data.  Covers
+/// the common web formats; defaults to PNG when unrecognised.
+fn detect_image_media_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/png"
+    }
+}
+
 // ── System Channel 处理 ───────────────────────────────────────────────────────
 
 fn handle_system_message(msg: InboundMessage, bus: &Arc<AppMessageBus>) {
@@ -1155,5 +1220,21 @@ fn handle_system_message(msg: InboundMessage, bus: &Arc<AppMessageBus>) {
 
     if let Err(e) = bus.send_outbound(out) {
         warn!(error = %e, "Failed to route sub-agent result back to origin channel");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_image_media_type;
+
+    #[test]
+    fn detects_common_image_formats_from_magic_bytes() {
+        assert_eq!(detect_image_media_type(&[0x89, b'P', b'N', b'G', 0x0d]), "image/png");
+        assert_eq!(detect_image_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
+        assert_eq!(detect_image_media_type(b"GIF89a"), "image/gif");
+        let webp = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P', 0];
+        assert_eq!(detect_image_media_type(&webp), "image/webp");
+        // Unrecognised → default png
+        assert_eq!(detect_image_media_type(&[0x00, 0x01, 0x02]), "image/png");
     }
 }

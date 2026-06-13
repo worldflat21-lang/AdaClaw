@@ -200,6 +200,30 @@ impl BaseChannel {
         content: &str,
         metadata: HashMap<String, Value>,
     ) {
+        self.handle_content(
+            bus,
+            sender_id,
+            sender_name,
+            session_id,
+            MessageContent::Text(content.to_string()),
+            metadata,
+        )
+        .await;
+    }
+
+    /// Like [`Self::handle_message`], but publishes an arbitrary
+    /// [`MessageContent`] (image/audio/file) rather than text.  Applies the
+    /// same allowlist check.  For a captioned image, put the caption in
+    /// `metadata["caption"]` — the daemon reads it as the user's prompt.
+    pub async fn handle_content(
+        &self,
+        bus: &Arc<dyn MessageBus>,
+        sender_id: &str,
+        sender_name: &str,
+        session_id: &str,
+        content: MessageContent,
+        metadata: HashMap<String, Value>,
+    ) {
         if !self.is_allowed(sender_id) {
             tracing::warn!(
                 channel = %self.name,
@@ -217,7 +241,7 @@ impl BaseChannel {
             session_id: session_id.to_string(),
             sender_id: sender_id.to_string(),
             sender_name: sender_name.to_string(),
-            content: MessageContent::Text(content.to_string()),
+            content,
             reply_to: None,
             metadata,
         };

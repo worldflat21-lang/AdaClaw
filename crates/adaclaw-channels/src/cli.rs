@@ -45,7 +45,7 @@ impl Channel for CliChannel {
     async fn start(&self, bus: Arc<dyn MessageBus>) -> Result<()> {
         self.base.set_running(true);
         info!("CLI channel started. Type a message and press Enter.");
-        info!("Commands: /new (new session), /stop, /help");
+        info!("Commands: /new (new session), /stop, /help, /img <path> [caption] (send an image)");
 
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
@@ -65,6 +65,39 @@ impl Channel for CliChannel {
             let text = line.trim().to_string();
             if text.is_empty() {
                 print_prompt();
+                continue;
+            }
+
+            // `/img <path> [caption]` — attach a local image for vision models.
+            if let Some(rest) = text.strip_prefix("/img ") {
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let path = parts.next().unwrap_or("").trim();
+                let caption = parts.next().unwrap_or("").trim();
+                match std::fs::read(path) {
+                    Ok(bytes) => {
+                        let mut metadata: HashMap<String, Value> = HashMap::new();
+                        if !caption.is_empty() {
+                            metadata.insert(
+                                "caption".to_string(),
+                                Value::String(caption.to_string()),
+                            );
+                        }
+                        self.base
+                            .handle_content(
+                                &bus,
+                                "local_user",
+                                "User",
+                                "cli:default",
+                                MessageContent::Image(bytes),
+                                metadata,
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        println!("⚠️  could not read image '{}': {}", path, e);
+                        print_prompt();
+                    }
+                }
                 continue;
             }
 

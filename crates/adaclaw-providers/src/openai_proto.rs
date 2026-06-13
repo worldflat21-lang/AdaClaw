@@ -57,6 +57,21 @@ pub fn build_messages(req: &ChatRequest<'_>) -> Vec<Value> {
                 },
                 "tool_calls": calls,
             }));
+        } else if !m.images.is_empty() {
+            // Multimodal user turn: content becomes an array of text + image parts.
+            let mut parts: Vec<Value> = Vec::new();
+            if !m.content.is_empty() {
+                parts.push(json!({"type": "text", "text": m.content}));
+            }
+            for img in &m.images {
+                parts.push(json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}", img.media_type, img.data_base64),
+                    },
+                }));
+            }
+            msgs.push(json!({"role": m.role, "content": parts}));
         } else {
             msgs.push(json!({"role": m.role, "content": m.content}));
         }
@@ -162,6 +177,32 @@ mod tests {
         assert_eq!(tc["function"]["name"], "shell");
         // arguments must be a JSON-encoded string, not an object.
         assert_eq!(tc["function"]["arguments"], "{\"command\":\"ls\"}");
+    }
+
+    #[test]
+    fn build_messages_encodes_image_as_data_url() {
+        use adaclaw_core::provider::ImageData;
+        let history = vec![ChatMessage::user_with_images(
+            "what is this?",
+            vec![ImageData {
+                media_type: "image/png".to_string(),
+                data_base64: "QUJD".to_string(),
+            }],
+        )];
+        let req = ChatRequest {
+            messages: &history,
+            system: None,
+        };
+        let msgs = build_messages(&req);
+        assert_eq!(msgs[0]["role"], "user");
+        // content is an array: text part then image_url part.
+        assert_eq!(msgs[0]["content"][0]["type"], "text");
+        assert_eq!(msgs[0]["content"][0]["text"], "what is this?");
+        assert_eq!(msgs[0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            msgs[0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,QUJD"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ dependencies = [
  "adaclaw-tools",
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "clap",
  "futures-util",
  "regex",

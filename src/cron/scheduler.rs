@@ -595,6 +595,7 @@ fn spawn_long_task(
                 temp,
                 system_extra.as_deref(),
                 Some(max_iter),
+                &[],
             ),
         )
         .await;

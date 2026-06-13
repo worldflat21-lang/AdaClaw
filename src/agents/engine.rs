@@ -169,7 +169,7 @@ impl AgentEngine {
         model: &str,
         temp: f64,
     ) -> Result<String> {
-        self.run_tool_loop_with_options(provider, tools, input, model, temp, None, None)
+        self.run_tool_loop_with_options(provider, tools, input, model, temp, None, None, &[])
             .await
     }
 
@@ -184,6 +184,7 @@ impl AgentEngine {
         temp: f64,
         system: Option<&str>,
         max_iterations: Option<usize>,
+        images: &[adaclaw_core::provider::ImageData],
     ) -> Result<String> {
         let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
@@ -245,9 +246,18 @@ impl AgentEngine {
 
         // ── Step 2: Build visible messages from history + new user message ────
         let mut messages: Vec<ChatMessage> = self.visible_messages();
-        messages.push(ChatMessage::new("user", input));
+        // Attach images to the user turn (caller is responsible for only passing
+        // images to vision-capable providers). Images live only in this turn's
+        // in-memory context — they are not persisted to durable history below.
+        let user_msg = if images.is_empty() {
+            ChatMessage::new("user", input)
+        } else {
+            ChatMessage::user_with_images(input, images.to_vec())
+        };
+        messages.push(user_msg);
 
-        // Add user message to persistent history
+        // Add user message to persistent history (text only — images are
+        // per-turn context, never written to the durable store).
         self.push_history(MessageEntry::new("user", input, &current_topic));
 
         // Tool specs for native tool calling. Providers that advertise native

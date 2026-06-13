@@ -92,6 +92,23 @@ impl AnthropicProvider {
                     }));
                 }
                 out.push(serde_json::json!({"role": "assistant", "content": blocks}));
+            } else if !m.images.is_empty() {
+                // Multimodal user turn: text + base64 image source blocks.
+                let mut blocks: Vec<Value> = Vec::new();
+                if !m.content.is_empty() {
+                    blocks.push(serde_json::json!({"type": "text", "text": m.content}));
+                }
+                for img in &m.images {
+                    blocks.push(serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img.media_type,
+                            "data": img.data_base64,
+                        },
+                    }));
+                }
+                out.push(serde_json::json!({"role": m.role, "content": blocks}));
             } else {
                 out.push(serde_json::json!({"role": m.role, "content": m.content}));
             }
@@ -349,6 +366,30 @@ mod tests {
         assert_eq!(msgs[2]["content"][0]["type"], "tool_result");
         assert_eq!(msgs[2]["content"][0]["tool_use_id"], "t1");
         assert_eq!(msgs[2]["content"][1]["tool_use_id"], "t2");
+    }
+
+    #[test]
+    fn build_messages_encodes_image_as_base64_source() {
+        use adaclaw_core::provider::ImageData;
+        let history = vec![ChatMessage::user_with_images(
+            "describe",
+            vec![ImageData {
+                media_type: "image/jpeg".to_string(),
+                data_base64: "QUJD".to_string(),
+            }],
+        )];
+        let req = ChatRequest {
+            messages: &history,
+            system: None,
+        };
+        let msgs = AnthropicProvider::build_messages(&req);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"][0]["type"], "text");
+        assert_eq!(msgs[0]["content"][0]["text"], "describe");
+        assert_eq!(msgs[0]["content"][1]["type"], "image");
+        assert_eq!(msgs[0]["content"][1]["source"]["type"], "base64");
+        assert_eq!(msgs[0]["content"][1]["source"]["media_type"], "image/jpeg");
+        assert_eq!(msgs[0]["content"][1]["source"]["data"], "QUJD");
     }
 
     #[test]

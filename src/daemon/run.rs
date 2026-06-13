@@ -929,12 +929,16 @@ async fn agent_dispatch_loop(
                     )));
                 }
 
+                // ── 组装系统提示（身份 + 工具协议 + 工具目录 + 技能 + extra）──
+                // 必须在 tools 列表最终确定（含 MCP 工具与 DelegateTool）之后调用，
+                // 这样工具目录才完整。否则模型不知道有哪些工具、如何调用。
+                let system_prompt = instance.build_system_prompt(&tools);
+
                 // ── 提取执行参数 ──────────────────────────────────────────────
                 let provider = Arc::clone(&instance.provider);
                 let model = instance.model.clone();
                 let temperature = instance.temperature;
                 let max_iterations = instance.max_iterations;
-                let system_extra = instance.system_extra.clone();
                 let agent_id_owned = instance.agent_id.clone();
                 let session_id = msg.session_id.clone();
                 let target_channel = msg.channel.clone();
@@ -997,7 +1001,7 @@ async fn agent_dispatch_loop(
                             &text,
                             &model,
                             temperature,
-                            system_extra.as_deref(),
+                            Some(system_prompt.as_str()),
                             Some(max_iterations),
                         )
                         .await;

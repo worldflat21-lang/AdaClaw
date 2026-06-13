@@ -31,6 +31,7 @@
 use adaclaw_core::provider::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
 };
+use adaclaw_core::tool::ToolSpec;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -260,6 +261,54 @@ impl Provider for ReliabilityChain {
     }
 
     async fn chat(&self, req: ChatRequest<'_>, model: &str, temp: f64) -> Result<ChatResponse> {
+        self.chat_inner(req, &[], model, temp).await
+    }
+
+    /// Native tool calling through the reliability chain.  Forwards `tools` to
+    /// the active provider's `chat_with_tools`, reusing the full retry /
+    /// circuit-breaker / failover machinery.
+    async fn chat_with_tools(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatResponse> {
+        self.chat_inner(req, tools, model, temp).await
+    }
+
+    /// 委托给 `self.chat()`，复用全部重试/熔断逻辑，避免代码重复。
+    async fn chat_with_system(
+        &self,
+        system: Option<&str>,
+        msg: &str,
+        model: &str,
+        temp: f64,
+    ) -> Result<String> {
+        let messages = vec![ChatMessage::new("user", msg)];
+        let req = ChatRequest {
+            messages: &messages,
+            system,
+        };
+        Ok(self.chat(req, model, temp).await?.content)
+    }
+}
+
+impl ReliabilityChain {
+    /// Shared retry / circuit-breaker / failover loop backing both
+    /// [`Provider::chat`] and [`Provider::chat_with_tools`].
+    ///
+    /// It always calls the inner provider's `chat_with_tools`; with an empty
+    /// `tools` slice that is equivalent to `chat` (the trait's default
+    /// `chat_with_tools` falls back to `chat`), so the plain-chat path is
+    /// unchanged for providers without native tool support.
+    async fn chat_inner(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatResponse> {
         // 前置检查：若所有 Provider 均在冷却中，直接返回清晰错误
         if !self.has_available_provider() {
             return Err(anyhow::anyhow!(
@@ -296,7 +345,10 @@ impl Provider for ReliabilityChain {
                     backoff_ms = backoff_ms.saturating_mul(BACKOFF_MULTIPLIER);
                 }
 
-                match provider.chat(req.clone(), model, temp).await {
+                match provider
+                    .chat_with_tools(req.clone(), tools, model, temp)
+                    .await
+                {
                     Ok(resp) => {
                         self.tracker.record_success(provider.name());
                         return Ok(resp);
@@ -382,24 +434,6 @@ impl Provider for ReliabilityChain {
         Err(last_err)
     }
 
-    /// 委托给 `self.chat()`，复用全部重试/熔断逻辑，避免代码重复。
-    async fn chat_with_system(
-        &self,
-        system: Option<&str>,
-        msg: &str,
-        model: &str,
-        temp: f64,
-    ) -> Result<String> {
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: msg.to_string(),
-        }];
-        let req = ChatRequest {
-            messages: &messages,
-            system,
-        };
-        Ok(self.chat(req, model, temp).await?.content)
-    }
 }
 
 // ── 单元测试 ──────────────────────────────────────────────────────────────────
@@ -629,6 +663,8 @@ mod tests {
             Ok(ChatResponse {
                 content: "ok".to_string(),
                 reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: None,
             })
         }
         async fn chat_with_system(
@@ -655,10 +691,7 @@ mod tests {
         ])
         .with_max_retries(0);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -680,10 +713,7 @@ mod tests {
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -707,10 +737,7 @@ mod tests {
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -733,10 +760,7 @@ mod tests {
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -760,10 +784,7 @@ mod tests {
         ])
         .with_max_retries(3);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -787,10 +808,7 @@ mod tests {
         ])
         .with_max_retries(0); // 不重试，fallback 到 p2
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -815,10 +833,7 @@ mod tests {
         ])
         .with_max_retries(0);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,
@@ -835,10 +850,7 @@ mod tests {
         })])
         .with_max_retries(0);
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "hi".to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", "hi")];
         let req = ChatRequest {
             messages: &messages,
             system: None,

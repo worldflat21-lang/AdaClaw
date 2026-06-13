@@ -1,5 +1,6 @@
 pub mod error;
 pub mod openai_compat;
+pub mod openai_proto;
 pub mod registry;
 pub mod reliable;
 pub mod router;
@@ -9,14 +10,7 @@ pub mod anthropic;
 pub mod ollama;
 pub mod openai;
 
-// Legacy per-provider modules — kept for reference; functionality is now
-// handled by `openai_compat`.  Will be removed in a future cleanup pass.
-#[deprecated(since = "0.1.0", note = "use openai_compat instead")]
-#[allow(deprecated)]
-pub mod deepseek;
-#[deprecated(since = "0.1.0", note = "use openai_compat instead")]
-#[allow(deprecated)]
+// Groq's LLM endpoint is OpenAI-compatible (served by `openai_compat`); this
+// module retains only the Whisper speech-transcription helper, which has no
+// OpenAI-compatible equivalent.
 pub mod groq;
-#[deprecated(since = "0.1.0", note = "use openai_compat instead")]
-#[allow(deprecated)]
-pub mod openrouter;

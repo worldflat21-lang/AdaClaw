@@ -25,6 +25,7 @@
 use adaclaw_core::provider::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
 };
+use adaclaw_core::tool::ToolSpec;
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -222,15 +223,90 @@ impl OpenAiCompatProvider {
         }
     }
 
-    fn build_messages(req: &ChatRequest<'_>) -> Vec<Value> {
-        let mut msgs = Vec::new();
-        if let Some(sys) = req.system {
-            msgs.push(serde_json::json!({"role": "system", "content": sys}));
+    /// Shared request path for [`Provider::chat`] and
+    /// [`Provider::chat_with_tools`].  When `tools` is non-empty it is sent as
+    /// the OpenAI `tools` array and any `tool_calls` the model emits are parsed
+    /// back into the response.
+    async fn chat_inner(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatResponse> {
+        let messages = crate::openai_proto::build_messages(&req);
+
+        // Respect per-provider minimum temperature constraint.
+        let effective_temp = self
+            .def
+            .min_temperature
+            .map(|min| temp.max(min))
+            .unwrap_or(temp);
+
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "temperature": effective_temp,
+        });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(crate::openai_proto::build_tools(tools));
         }
-        for m in req.messages {
-            msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
+
+        let mut builder = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .json(&body);
+
+        if let Some(key) = &self.key {
+            builder = builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
         }
-        msgs
+
+        let resp = builder.send().await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::Error::new(ProviderError::from_status(
+                status,
+                &text,
+                retry_after,
+            )));
+        }
+
+        let data: Value = resp.json().await?;
+        let message = &data["choices"][0]["message"];
+
+        let raw_content = message["content"].as_str().unwrap_or("").to_string();
+
+        // 1. Prefer explicit `reasoning_content` field (DeepSeek-R1 etc.)
+        let explicit_reasoning = message["reasoning_content"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        // 2. Fall back to stripping <think> tags from content.
+        let (content, reasoning_content) = if explicit_reasoning.is_some() {
+            (raw_content, explicit_reasoning)
+        } else {
+            let (vis, think) = Self::strip_think_tags(&raw_content);
+            if think.is_some() {
+                (vis, think)
+            } else {
+                (raw_content, None)
+            }
+        };
+
+        Ok(ChatResponse {
+            content,
+            reasoning_content,
+            tool_calls: crate::openai_proto::parse_tool_calls(message),
+            usage: crate::openai_proto::parse_usage(&data),
+        })
     }
 
     /// Strip `<think>…</think>` tags from `content`.
@@ -289,74 +365,17 @@ impl Provider for OpenAiCompatProvider {
     }
 
     async fn chat(&self, req: ChatRequest<'_>, model: &str, temp: f64) -> Result<ChatResponse> {
-        let messages = Self::build_messages(&req);
+        self.chat_inner(req, &[], model, temp).await
+    }
 
-        // Respect per-provider minimum temperature constraint.
-        let effective_temp = self
-            .def
-            .min_temperature
-            .map(|min| temp.max(min))
-            .unwrap_or(temp);
-
-        let body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "temperature": effective_temp,
-        });
-
-        let mut builder = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .json(&body);
-
-        if let Some(key) = &self.key {
-            builder = builder.header("Authorization", format!("Bearer {}", key.expose_secret()));
-        }
-
-        let resp = builder.send().await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok());
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::Error::new(ProviderError::from_status(
-                status,
-                &text,
-                retry_after,
-            )));
-        }
-
-        let data: Value = resp.json().await?;
-        let message = &data["choices"][0]["message"];
-
-        let raw_content = message["content"].as_str().unwrap_or("").to_string();
-
-        // 1. Prefer explicit `reasoning_content` field (DeepSeek-R1 etc.)
-        let explicit_reasoning = message["reasoning_content"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-
-        // 2. Fall back to stripping <think> tags from content.
-        let (content, reasoning_content) = if explicit_reasoning.is_some() {
-            (raw_content, explicit_reasoning)
-        } else {
-            let (vis, think) = Self::strip_think_tags(&raw_content);
-            if think.is_some() {
-                (vis, think)
-            } else {
-                (raw_content, None)
-            }
-        };
-
-        Ok(ChatResponse {
-            content,
-            reasoning_content,
-        })
+    async fn chat_with_tools(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatResponse> {
+        self.chat_inner(req, tools, model, temp).await
     }
 
     async fn chat_with_system(
@@ -366,10 +385,7 @@ impl Provider for OpenAiCompatProvider {
         model: &str,
         temp: f64,
     ) -> Result<String> {
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: msg.to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", msg)];
         let req = ChatRequest {
             messages: &messages,
             system,

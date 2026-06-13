@@ -44,6 +44,18 @@ const HARD_MAX_HISTORY: usize = 60;
 /// Start a rolling compaction pass when history reaches this length.
 const ROLLING_THRESHOLD: usize = 30;
 
+/// Prompt-token level at which we start a rolling compaction even if the
+/// message *count* is still below `ROLLING_THRESHOLD`.
+///
+/// This catches token-dense conversations (e.g. a handful of large tool
+/// outputs) that the message-count heuristic alone would miss — a single 30k
+/// token tool result in message 5 would otherwise never trigger compaction.
+/// The value is sourced from the provider's reported `usage.prompt_tokens`, so
+/// it reflects the *actual* context size rather than an estimate.  It is a
+/// conservative default; deriving it from each model's context window is a
+/// natural future refinement.
+const ROLLING_TOKEN_THRESHOLD: u32 = 24_000;
+
 /// How many recent messages to keep verbatim after compaction.
 const ROLLING_KEEP: usize = 15;
 
@@ -66,19 +78,25 @@ pub fn trim_history(history: &mut Vec<ChatMessage>) {
 /// Rolling compaction: summarise the *oldest* portion of the history with an
 /// LLM call, replacing it with a single summary message.
 ///
-/// Only triggers when `history.len() >= ROLLING_THRESHOLD`.
+/// Triggers when `history.len() >= ROLLING_THRESHOLD` **or** the last reported
+/// `prompt_tokens` reaches `ROLLING_TOKEN_THRESHOLD`.
 /// Falls back to `trim_history` if the LLM call fails.
 ///
 /// # Parameters
-/// - `history`  — the mutable conversation history (modified in-place)
-/// - `provider` — any `Provider` impl used for the summary LLM call
-/// - `model`    — model name to use (usually the agent's own model)
+/// - `history`       — the mutable conversation history (modified in-place)
+/// - `provider`      — any `Provider` impl used for the summary LLM call
+/// - `model`         — model name to use (usually the agent's own model)
+/// - `prompt_tokens` — prompt tokens of the most recent request, if the
+///   provider reported usage; drives token-based triggering
 pub async fn rolling_compact(
     history: &mut Vec<ChatMessage>,
     provider: &dyn Provider,
     model: &str,
+    prompt_tokens: Option<u32>,
 ) -> Result<()> {
-    if history.len() < ROLLING_THRESHOLD {
+    let over_count = history.len() >= ROLLING_THRESHOLD;
+    let over_tokens = prompt_tokens.is_some_and(|t| t >= ROLLING_TOKEN_THRESHOLD);
+    if !over_count && !over_tokens {
         return Ok(());
     }
 
@@ -135,10 +153,7 @@ pub async fn rolling_compact(
             history.drain(1..sum_end);
             history.insert(
                 1,
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: format!("[Conversation summary]: {}", summary),
-                },
+                ChatMessage::new("system", format!("[Conversation summary]: {}", summary)),
             );
             tracing::debug!(
                 before,
@@ -166,8 +181,9 @@ pub async fn auto_compact_history(
     history: &mut Vec<ChatMessage>,
     provider: &dyn Provider,
     model: &str,
+    prompt_tokens: Option<u32>,
 ) -> Result<()> {
-    rolling_compact(history, provider, model).await?;
+    rolling_compact(history, provider, model, prompt_tokens).await?;
     // Safety net: ensure we never exceed the absolute hard limit.
     if history.len() > HARD_MAX_HISTORY {
         trim_history(history);
@@ -183,13 +199,11 @@ mod tests {
 
     fn make_history(n: usize) -> Vec<ChatMessage> {
         (0..n)
-            .map(|i| ChatMessage {
-                role: if i % 2 == 0 {
-                    "user".to_string()
-                } else {
-                    "assistant".to_string()
-                },
-                content: format!("message {}", i),
+            .map(|i| {
+                ChatMessage::new(
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    format!("message {}", i),
+                )
             })
             .collect()
     }
@@ -342,7 +356,7 @@ mod tests {
     async fn test_rolling_compact_noop_when_small() {
         // PanicProvider must NOT be called — history is below ROLLING_THRESHOLD.
         let mut h = make_history(ROLLING_THRESHOLD - 1);
-        rolling_compact(&mut h, &PanicProvider, "any-model")
+        rolling_compact(&mut h, &PanicProvider, "any-model", None)
             .await
             .unwrap();
         assert_eq!(
@@ -365,7 +379,7 @@ mod tests {
         let first_content = h[0].content.clone();
         let last_content = h.last().unwrap().content.clone();
 
-        rolling_compact(&mut h, &SummaryProvider, "gpt-4")
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4", None)
             .await
             .unwrap();
 
@@ -408,13 +422,13 @@ mod tests {
         // so a second immediate call is a no-op (no infinite LLM-call loop).
         let mut h = make_history(ROLLING_THRESHOLD + 5);
 
-        rolling_compact(&mut h, &SummaryProvider, "gpt-4")
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4", None)
             .await
             .unwrap();
         let after_first = h.len();
 
         // Second call must be a no-op (PanicProvider would panic if called).
-        rolling_compact(&mut h, &PanicProvider, "gpt-4")
+        rolling_compact(&mut h, &PanicProvider, "gpt-4", None)
             .await
             .unwrap();
 
@@ -436,7 +450,7 @@ mod tests {
         let last_content = h.last().unwrap().content.clone();
 
         // Should complete without propagating the LLM error
-        rolling_compact(&mut h, &FailProvider, "model")
+        rolling_compact(&mut h, &FailProvider, "model", None)
             .await
             .unwrap();
 
@@ -462,13 +476,40 @@ mod tests {
         assert!(!has_summary, "no summary must be inserted when LLM fails");
     }
 
+    // ── rolling_compact: token-based trigger ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_rolling_compact_triggers_on_high_prompt_tokens() {
+        // History is *below* the message-count threshold (20 < ROLLING_THRESHOLD
+        // = 30), so the count-based trigger would not fire — but high reported
+        // prompt_tokens must.
+        let mut h = make_history(20);
+        rolling_compact(&mut h, &SummaryProvider, "gpt-4", Some(25_000))
+            .await
+            .unwrap();
+        assert!(
+            h[1].content.starts_with("[Conversation summary]"),
+            "high prompt_tokens must trigger compaction even below the message count"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rolling_compact_noop_when_tokens_below_threshold() {
+        // Below both triggers → PanicProvider must NOT be called.
+        let mut h = make_history(20);
+        rolling_compact(&mut h, &PanicProvider, "gpt-4", Some(1_000))
+            .await
+            .unwrap();
+        assert_eq!(h.len(), 20, "below both triggers must be a no-op");
+    }
+
     // ── auto_compact_history ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_auto_compact_history_noop_below_threshold() {
         let mut h = make_history(ROLLING_THRESHOLD - 1);
         // PanicProvider must not be called
-        auto_compact_history(&mut h, &PanicProvider, "model")
+        auto_compact_history(&mut h, &PanicProvider, "model", None)
             .await
             .unwrap();
         assert_eq!(
@@ -488,7 +529,7 @@ mod tests {
         let first_content = h[0].content.clone();
         let last_content = h.last().unwrap().content.clone();
 
-        auto_compact_history(&mut h, &SummaryProvider, "model")
+        auto_compact_history(&mut h, &SummaryProvider, "model", None)
             .await
             .unwrap();
 
@@ -509,7 +550,7 @@ mod tests {
         // Even when LLM fails and rolling_compact falls back to trim, auto_compact_history
         // must succeed (Ok) and leave history within HARD_MAX_HISTORY.
         let mut h = make_history(ROLLING_THRESHOLD + 20);
-        auto_compact_history(&mut h, &FailProvider, "model")
+        auto_compact_history(&mut h, &FailProvider, "model", None)
             .await
             .unwrap();
         assert!(

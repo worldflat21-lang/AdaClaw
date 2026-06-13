@@ -1,21 +1,16 @@
-//! Groq Provider
+//! Groq Whisper speech transcription.
 //!
-//! Groq 提供 OpenAI-compatible LLM 接口 + Whisper 语音转录。
+//! Groq's LLM endpoint is OpenAI-compatible and is served by
+//! [`crate::openai_compat`] (`spec_for("groq")`); the duplicate `GroqProvider`
+//! that used to live here was removed.  What remains is the Whisper transcriber,
+//! which has no OpenAI-compatible equivalent in our table.
 //!
-//! ## LLM 端点
-//! `https://api.groq.com/openai/v1/chat/completions`（OpenAI-compatible）
-//!
-//! ## Whisper 转录
+//! ## Whisper transcription
 //! `POST https://api.groq.com/openai/v1/audio/transcriptions`
 //! - model: `whisper-large-v3`
-//! - 支持 voice/audio 文件字节（multipart/form-data）
+//! - accepts voice/audio file bytes (multipart/form-data)
 
-use crate::registry::ProviderSpec;
-use adaclaw_core::provider::{
-    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
-};
 use anyhow::{Result, anyhow};
-use async_trait::async_trait;
 use reqwest::Client;
 use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
@@ -23,113 +18,6 @@ use tracing::debug;
 
 const BASE_URL: &str = "https://api.groq.com/openai/v1";
 const WHISPER_MODEL: &str = "whisper-large-v3";
-
-// ── GroqProvider ──────────────────────────────────────────────────────────────
-
-pub struct GroqProvider {
-    /// Phase 14-P1-2: API key wrapped in `Secret<String>`.
-    key: Option<Secret<String>>,
-    base_url: String,
-    client: Client,
-}
-
-impl GroqProvider {
-    pub fn new(key: Option<&str>, url: Option<&str>) -> Self {
-        Self {
-            key: key.map(|s| Secret::new(s.to_string())),
-            base_url: url.unwrap_or(BASE_URL).trim_end_matches('/').to_string(),
-            client: Client::new(),
-        }
-    }
-
-    fn build_messages(req: &ChatRequest<'_>) -> Vec<Value> {
-        let mut msgs = Vec::new();
-        if let Some(sys) = req.system {
-            msgs.push(serde_json::json!({"role": "system", "content": sys}));
-        }
-        for m in req.messages {
-            msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
-        }
-        msgs
-    }
-
-    fn auth_header(&self) -> Option<String> {
-        self.key
-            .as_ref()
-            .map(|k| format!("Bearer {}", k.expose_secret()))
-    }
-}
-
-#[async_trait]
-impl Provider for GroqProvider {
-    fn name(&self) -> &str {
-        "groq"
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            native_tool_calling: true,
-            vision: false, // Groq LLM 当前不支持 vision
-            streaming: true,
-        }
-    }
-
-    async fn chat(&self, req: ChatRequest<'_>, model: &str, temp: f64) -> Result<ChatResponse> {
-        let messages = Self::build_messages(&req);
-        let body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "temperature": temp,
-        });
-
-        let mut builder = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .json(&body);
-
-        if let Some(auth) = self.auth_header() {
-            builder = builder.header("Authorization", auth);
-        }
-
-        let resp = builder.send().await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("Groq API error {}: {}", status, text));
-        }
-
-        let data: Value = resp.json().await?;
-        let content = data["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-
-        debug!(model = %model, chars = content.len(), "Groq response");
-        Ok(ChatResponse {
-            content,
-            reasoning_content: None,
-        })
-    }
-
-    async fn chat_with_system(
-        &self,
-        system: Option<&str>,
-        msg: &str,
-        model: &str,
-        temp: f64,
-    ) -> Result<String> {
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: msg.to_string(),
-        }];
-        let req = ChatRequest {
-            messages: &messages,
-            system,
-        };
-        Ok(self.chat(req, model, temp).await?.content)
-    }
-}
 
 // ── Whisper 语音转录 ───────────────────────────────────────────────────────────
 
@@ -201,22 +89,5 @@ impl GroqWhisper {
 
         debug!(chars = text.len(), "Whisper transcription complete");
         Ok(text)
-    }
-}
-
-// ── ProviderSpec ──────────────────────────────────────────────────────────────
-
-#[allow(deprecated)]
-pub fn spec() -> ProviderSpec {
-    ProviderSpec {
-        name: "groq",
-        aliases: &["groq-llama", "llama-3"],
-        local: false,
-        capabilities: ProviderCapabilities {
-            native_tool_calling: true,
-            vision: false,
-            streaming: true,
-        },
-        factory: Box::new(|key, url| Box::new(GroqProvider::new(key, url))),
     }
 }

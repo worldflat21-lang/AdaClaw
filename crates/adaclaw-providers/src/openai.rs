@@ -3,6 +3,7 @@ use crate::registry::ProviderSpec;
 use adaclaw_core::provider::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities,
 };
+use adaclaw_core::tool::ToolSpec;
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -31,39 +32,25 @@ impl OpenAiProvider {
         }
     }
 
-    fn build_messages(req: &ChatRequest<'_>) -> Vec<Value> {
-        let mut msgs = Vec::new();
-        if let Some(sys) = req.system {
-            msgs.push(serde_json::json!({"role": "system", "content": sys}));
-        }
-        for m in req.messages {
-            msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
-        }
-        msgs
-    }
-}
-
-#[async_trait]
-impl Provider for OpenAiProvider {
-    fn name(&self) -> &str {
-        "openai"
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            native_tool_calling: true,
-            vision: true,
-            streaming: true,
-        }
-    }
-
-    async fn chat(&self, req: ChatRequest<'_>, model: &str, temp: f64) -> Result<ChatResponse> {
-        let messages = Self::build_messages(&req);
-        let body = serde_json::json!({
+    /// Shared request path for [`Provider::chat`] and
+    /// [`Provider::chat_with_tools`].  Sends the OpenAI `tools` array when
+    /// `tools` is non-empty and parses any `tool_calls` / `usage` back.
+    async fn chat_inner(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatResponse> {
+        let messages = crate::openai_proto::build_messages(&req);
+        let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
             "temperature": temp,
         });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(crate::openai_proto::build_tools(tools));
+        }
 
         let mut builder = self
             .client
@@ -93,15 +80,44 @@ impl Provider for OpenAiProvider {
         }
 
         let data: Value = resp.json().await?;
-        let content = data["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let message = &data["choices"][0]["message"];
+        let content = message["content"].as_str().unwrap_or("").to_string();
 
         Ok(ChatResponse {
             content,
             reasoning_content: None,
+            tool_calls: crate::openai_proto::parse_tool_calls(message),
+            usage: crate::openai_proto::parse_usage(&data),
         })
+    }
+}
+
+#[async_trait]
+impl Provider for OpenAiProvider {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            native_tool_calling: true,
+            vision: true,
+            streaming: true,
+        }
+    }
+
+    async fn chat(&self, req: ChatRequest<'_>, model: &str, temp: f64) -> Result<ChatResponse> {
+        self.chat_inner(req, &[], model, temp).await
+    }
+
+    async fn chat_with_tools(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatResponse> {
+        self.chat_inner(req, tools, model, temp).await
     }
 
     async fn chat_with_system(
@@ -111,10 +127,7 @@ impl Provider for OpenAiProvider {
         model: &str,
         temp: f64,
     ) -> Result<String> {
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: msg.to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", msg)];
         let req = ChatRequest {
             messages: &messages,
             system,

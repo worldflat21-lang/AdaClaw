@@ -252,6 +252,42 @@ impl AgentInstance {
             .collect()
     }
 
+    /// 组装发送给 LLM 的完整系统提示。
+    ///
+    /// 在此之前，唯一进入 `system` 的内容是配置项 `system_extra`（默认 `None`），
+    /// 模型既不知道有哪些工具、也不知道调用格式，工具调用实际不可用。本方法把
+    /// 以下内容按顺序拼成系统提示，让现有的文本解析工具循环真正能跑：
+    ///
+    ///   1. 身份（`workspace/IDENTITY.md` 或内置默认）
+    ///   2. 工具调用协议（与 [`crate::agents::parser`] 期待的格式一致）
+    ///   3. 工具目录（每个工具的名称、描述、参数 JSON schema）
+    ///   4. 技能（`workspace/skills/` 下的 `<available_skills>` 块）
+    ///   5. 运行方追加的 `system_extra`
+    ///
+    /// 传入的 `tools` 应当是**最终**的工具列表（含 daemon 注入的 MCP 工具与
+    /// `DelegateTool`），这样目录才完整。
+    pub fn build_system_prompt(&self, tools: &[Box<dyn Tool>]) -> String {
+        let identity = crate::identity::load_identity(&self.workspace, Some(&self.agent_id))
+            .to_prompt_section();
+        let skills = crate::skills::load_skills(&self.workspace);
+        let skills_section = crate::skills::skills_to_prompt(&skills);
+        // Native-tool providers receive the tool list via the API `tools` array,
+        // so we omit the text catalog + call protocol to avoid advertising tools
+        // twice (which can make the model emit text-format calls it shouldn't).
+        // Non-native providers still get the full text catalog.
+        let catalog = if self.provider.supports_native_tools() {
+            String::new()
+        } else {
+            crate::agents::prompt::render_tool_catalog(tools)
+        };
+        crate::agents::prompt::assemble_system_prompt(
+            &identity,
+            &catalog,
+            &skills_section,
+            self.system_extra.as_deref(),
+        )
+    }
+
     /// 附加记忆后端（builder 风格，供 daemon 在构建后注入）。
     pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
         self.memory = Some(memory);

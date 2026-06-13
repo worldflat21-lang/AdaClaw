@@ -89,6 +89,9 @@ impl Provider for OllamaProvider {
         Ok(ChatResponse {
             content,
             reasoning_content: None,
+            // Ollama uses the text-parsing tool path (native_tool_calling=false).
+            tool_calls: Vec::new(),
+            usage: None,
         })
     }
 
@@ -99,10 +102,7 @@ impl Provider for OllamaProvider {
         model: &str,
         temp: f64,
     ) -> Result<String> {
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: msg.to_string(),
-        }];
+        let messages = vec![ChatMessage::new("user", msg)];
         let req = ChatRequest {
             messages: &messages,
             system,

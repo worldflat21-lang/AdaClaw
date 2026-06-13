@@ -48,10 +48,7 @@ impl MessageEntry {
 
     /// Convert to a `ChatMessage` for sending to the LLM.
     pub fn to_chat_message(&self) -> ChatMessage {
-        ChatMessage {
-            role: self.role.clone(),
-            content: self.content.clone(),
-        }
+        ChatMessage::new(self.role.clone(), self.content.clone())
     }
 }
 
@@ -248,13 +245,25 @@ impl AgentEngine {
 
         // ── Step 2: Build visible messages from history + new user message ────
         let mut messages: Vec<ChatMessage> = self.visible_messages();
-        messages.push(ChatMessage {
-            role: "user".to_string(),
-            content: input.to_string(),
-        });
+        messages.push(ChatMessage::new("user", input));
 
         // Add user message to persistent history
         self.push_history(MessageEntry::new("user", input, &current_topic));
+
+        // Tool specs for native tool calling. Providers that advertise native
+        // support receive these as the API `tools` array; providers that don't
+        // ignore them (the default `chat_with_tools` falls back to `chat`) and
+        // the engine drives tools via text parsing instead. The catalog is also
+        // omitted from the system prompt for native providers (see
+        // `AgentInstance::build_system_prompt`) to avoid double-advertising.
+        let tool_specs: Vec<adaclaw_core::tool::ToolSpec> =
+            tools.iter().map(|t| t.spec()).collect();
+
+        // Prompt tokens reported by the previous LLM response, used to drive
+        // token-aware compaction (more accurate than a message-count heuristic
+        // when a few messages are very large). `None` until the first response,
+        // or for providers that don't report usage.
+        let mut last_prompt_tokens: Option<u32> = None;
 
         for iteration in 0..max_iter {
             // Auto-compact history: rolling LLM summarisation when above threshold
@@ -272,7 +281,13 @@ impl AgentEngine {
                 .is_some_and(|m| m.content.starts_with("[Conversation summary]"));
 
             if let Err(e) =
-                crate::agents::compact::auto_compact_history(&mut messages, provider, model).await
+                crate::agents::compact::auto_compact_history(
+                    &mut messages,
+                    provider,
+                    model,
+                    last_prompt_tokens,
+                )
+                .await
             {
                 warn!(error = %e, "auto_compact_history failed, applying hard trim");
                 crate::agents::compact::trim_history(&mut messages);
@@ -314,7 +329,7 @@ impl AgentEngine {
                     messages: &messages,
                     system,
                 };
-                match provider.chat(req, model, temp).await {
+                match provider.chat_with_tools(req, &tool_specs, model, temp).await {
                     Ok(resp) => break Ok(resp),
                     Err(e) if detect_context_window_error(&e) && context_retry < 2 => {
                         warn!(
@@ -328,20 +343,45 @@ impl AgentEngine {
                     Err(e) => break Err(e),
                 }
             }?;
+
+            // Record token usage (if the provider reported it) to drive the next
+            // iteration's token-aware compaction.
+            last_prompt_tokens = response.usage.map(|u| u.prompt_tokens);
             debug!(
                 iteration,
                 response_len = response.content.len(),
+                prompt_tokens = last_prompt_tokens.unwrap_or(0),
+                completion_tokens = response.usage.map(|u| u.completion_tokens).unwrap_or(0),
                 "Agent got LLM response"
             );
 
-            messages.push(ChatMessage {
-                role: "assistant".to_string(),
-                content: response.content.clone(),
-            });
+            // ── Record the assistant turn and collect tool calls ──────────────
+            // Native path: the provider returned structured `tool_calls`. Record
+            // the assistant turn *with* those calls so the follow-up request
+            // round-trips correctly (OpenAI/Anthropic require the original calls
+            // alongside their results), then run them.
+            // Text path: no native calls — record plain content and parse the
+            // text for `<tool_call>` blocks (works with non-native providers).
+            let pending: Vec<PendingCall> = if !response.tool_calls.is_empty() {
+                messages.push(ChatMessage::assistant_tool_calls(
+                    response.content.clone(),
+                    response.tool_calls.clone(),
+                ));
+                response
+                    .tool_calls
+                    .iter()
+                    .map(|c| PendingCall {
+                        id: Some(c.id.clone()),
+                        name: c.name.clone(),
+                        args: c.arguments.clone(),
+                    })
+                    .collect()
+            } else {
+                messages.push(ChatMessage::new("assistant", response.content.clone()));
+                collect_text_tool_calls(&response.content)?
+            };
 
-            let parsed_calls = crate::agents::parser::ToolCallParser::parse(&response.content)?;
-
-            if parsed_calls.is_empty() {
+            if pending.is_empty() {
                 // No more tool calls — turn complete
                 let scrubbed = adaclaw_security::scrub::scrub_credentials(&response.content);
 
@@ -382,78 +422,63 @@ impl AgentEngine {
                 return Ok(final_response);
             }
 
-            // De-duplicate tool calls
-            let mut dedup = HashSet::<String>::new();
-            let mut tasks: Vec<(&Box<dyn Tool>, serde_json::Value)> = Vec::new();
-
-            for call in &parsed_calls {
-                let call_str = call.to_string();
-                if !dedup.insert(call_str) {
-                    warn!("Duplicate tool call skipped: {}", call["name"]);
-                    continue;
-                }
-
-                let name = match call.get("name").and_then(|n| n.as_str()) {
-                    Some(n) => n,
-                    None => {
-                        warn!("Tool call missing 'name' field, skipping");
-                        continue;
+            // ── Execute the pending tool calls ─────────────────────────────────
+            // Known tools run concurrently; an unknown tool name yields an error
+            // result rather than aborting the turn. Results are stitched back in
+            // `pending` order so each native call's result references its id.
+            let mut futures = Vec::new();
+            let mut slots: Vec<Option<(String, String)>> = vec![None; pending.len()];
+            for (idx, pc) in pending.iter().enumerate() {
+                match tools.iter().find(|t| t.name() == pc.name) {
+                    Some(tool) => {
+                        let name = pc.name.clone();
+                        let fut = tool.execute(pc.args.clone());
+                        futures.push(async move { (idx, name, fut.await) });
                     }
-                };
-
-                if let Some(tool) = tools.iter().find(|t| t.name() == name) {
-                    let args = call
-                        .get("arguments")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Object(Default::default()));
-                    tasks.push((tool, args));
-                } else {
-                    warn!("Unknown tool '{}' requested, skipping", name);
-                    messages.push(ChatMessage {
-                        role: "tool".to_string(),
-                        content: format!("Error: tool '{}' not found", name),
-                    });
+                    None => {
+                        warn!("Unknown tool '{}' requested", pc.name);
+                        had_tool_error = true;
+                        slots[idx] =
+                            Some((pc.name.clone(), format!("Error: tool '{}' not found", pc.name)));
+                    }
                 }
             }
 
-            let futures = tasks.iter().map(|(tool, args)| {
-                let name = tool.name().to_string();
-                let fut = tool.execute(args.clone());
-                async move { (name, fut.await) }
-            });
-
-            let results = join_all(futures).await;
-
-            for (name, result) in results {
+            for (idx, name, result) in join_all(futures).await {
                 let (content, success) = match result {
                     Ok(res) => {
-                        let out = if res.success {
-                            res.output
+                        if res.success {
+                            (res.output, true)
                         } else {
-                            format!(
-                                "Error: {}",
-                                res.error.unwrap_or_else(|| "unknown error".to_string())
+                            (
+                                format!(
+                                    "Error: {}",
+                                    res.error.unwrap_or_else(|| "unknown error".to_string())
+                                ),
+                                false,
                             )
-                        };
-                        (out, res.success)
+                        }
                     }
-                    Err(e) => {
-                        had_tool_error = true;
-                        (format!("Error executing tool: {}", e), false)
-                    }
+                    Err(e) => (format!("Error executing tool: {}", e), false),
                 };
-
-                // Track tool-level failures for Tier-1 reflection
                 if !success {
                     had_tool_error = true;
                 }
-
                 debug!(tool = %name, success, "Tool call completed");
+                slots[idx] = Some((name, content));
+            }
 
-                messages.push(ChatMessage {
-                    role: "tool".to_string(),
-                    content: format!("[{}]: {}", name, content),
-                });
+            // Push results in call order, using the native `tool_result` shape
+            // (linked by id) for native calls or the text `[name]: …` shape for
+            // text-parsed calls.
+            for (pc, slot) in pending.iter().zip(slots.into_iter()) {
+                if let Some((name, content)) = slot {
+                    match &pc.id {
+                        Some(id) => messages.push(ChatMessage::tool_result(id, content)),
+                        None => messages
+                            .push(ChatMessage::new("tool", format!("[{}]: {}", name, content))),
+                    }
+                }
             }
         }
 
@@ -929,10 +954,7 @@ async fn tiered_reflect(
     );
 
     let mut fix_messages = messages.to_vec();
-    fix_messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: fix_prompt,
-    });
+    fix_messages.push(ChatMessage::new("user", fix_prompt));
 
     let fix_req = ChatRequest {
         messages: &fix_messages,
@@ -956,11 +978,192 @@ async fn tiered_reflect(
     }
 }
 
+// ── Tool-call normalization ─────────────────────────────────────────────────
+
+/// A tool call to execute this iteration, normalized from either the native
+/// `tool_calls` response field or text-parsed `<tool_call>` blocks.
+struct PendingCall {
+    /// Native call id, used to link the `tool_result` back to its call. `None`
+    /// for text-parsed calls (the text path uses `[name]: …` instead).
+    id: Option<String>,
+    name: String,
+    args: serde_json::Value,
+}
+
+/// Parse `<tool_call>` blocks out of assistant text and normalize them,
+/// de-duplicating exact-duplicate calls (some models repeat a call in prose).
+fn collect_text_tool_calls(content: &str) -> Result<Vec<PendingCall>> {
+    let parsed = crate::agents::parser::ToolCallParser::parse(content)?;
+    let mut dedup = HashSet::<String>::new();
+    let mut out = Vec::new();
+    for call in &parsed {
+        if !dedup.insert(call.to_string()) {
+            warn!("Duplicate tool call skipped: {}", call["name"]);
+            continue;
+        }
+        match call.get("name").and_then(|n| n.as_str()) {
+            Some(name) => out.push(PendingCall {
+                id: None,
+                name: name.to_string(),
+                args: call
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(Default::default())),
+            }),
+            None => warn!("Tool call missing 'name' field, skipping"),
+        }
+    }
+    Ok(out)
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_collect_text_tool_calls_parses_and_dedups() {
+        let content = "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>\n\
+                       <tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>";
+        let calls = collect_text_tool_calls(content).unwrap();
+        assert_eq!(calls.len(), 1, "exact-duplicate text calls are deduped");
+        assert_eq!(calls[0].name, "shell");
+        assert_eq!(calls[0].args["command"], "ls");
+        assert!(calls[0].id.is_none(), "text-parsed calls carry no native id");
+    }
+
+    #[test]
+    fn test_collect_text_tool_calls_empty_for_plain_text() {
+        let calls = collect_text_tool_calls("just a normal answer, no tools").unwrap();
+        assert!(calls.is_empty());
+    }
+
+    // ── native tool-calling end-to-end ────────────────────────────────────────
+
+    /// A provider that, on its first `chat_with_tools` call, asks to run the
+    /// `echo` tool, and on the second call asserts that the assistant tool-call
+    /// turn and its `tool_result` were faithfully sent back, returning "done"
+    /// only if the round-trip is intact.
+    struct ScriptedProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedProvider {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+        fn capabilities(&self) -> adaclaw_core::provider::ProviderCapabilities {
+            adaclaw_core::provider::ProviderCapabilities {
+                native_tool_calling: true,
+                vision: false,
+                streaming: false,
+            }
+        }
+        async fn chat(
+            &self,
+            _req: ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> Result<adaclaw_core::provider::ChatResponse> {
+            Ok(adaclaw_core::provider::ChatResponse::default())
+        }
+        async fn chat_with_tools(
+            &self,
+            req: ChatRequest<'_>,
+            _tools: &[adaclaw_core::tool::ToolSpec],
+            _model: &str,
+            _temp: f64,
+        ) -> Result<adaclaw_core::provider::ChatResponse> {
+            use std::sync::atomic::Ordering;
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok(adaclaw_core::provider::ChatResponse {
+                    tool_calls: vec![adaclaw_core::provider::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "echo".to_string(),
+                        arguments: serde_json::json!({"text": "hi"}),
+                    }],
+                    ..Default::default()
+                })
+            } else {
+                let saw_assistant_call = req
+                    .messages
+                    .iter()
+                    .any(|m| m.tool_calls.iter().any(|c| c.id == "call_1"));
+                let saw_result = req.messages.iter().any(|m| {
+                    m.tool_call_id.as_deref() == Some("call_1") && m.content.contains("echoed:hi")
+                });
+                Ok(adaclaw_core::provider::ChatResponse {
+                    content: if saw_assistant_call && saw_result {
+                        "done".to_string()
+                    } else {
+                        "MISSING_ROUNDTRIP".to_string()
+                    },
+                    ..Default::default()
+                })
+            }
+        }
+        async fn chat_with_system(
+            &self,
+            _s: Option<&str>,
+            _m: &str,
+            _mo: &str,
+            _t: f64,
+        ) -> Result<String> {
+            Ok("NO".to_string())
+        }
+    }
+
+    struct EchoTool;
+
+    #[async_trait::async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo text"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
+        }
+        fn spec(&self) -> adaclaw_core::tool::ToolSpec {
+            adaclaw_core::tool::ToolSpec {
+                name: "echo".to_string(),
+                description: "echo text".to_string(),
+                parameters: self.parameters_schema(),
+            }
+        }
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+        ) -> Result<adaclaw_core::tool::ToolResult> {
+            Ok(adaclaw_core::tool::ToolResult {
+                success: true,
+                output: format!("echoed:{}", args["text"].as_str().unwrap_or("")),
+                error: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_native_tool_loop_roundtrips_tool_result() {
+        let engine = AgentEngine::new();
+        let provider = ScriptedProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
+        let out = engine
+            .run_tool_loop(&provider, &tools, "please echo hi", "test-model", 0.0)
+            .await
+            .unwrap();
+        assert_eq!(
+            out, "done",
+            "native tool_call + tool_result must round-trip back to the provider"
+        );
+    }
 
     #[test]
     fn test_detect_clean_intent_chinese() {
@@ -1104,16 +1307,13 @@ mod tests {
     fn make_messages(n: usize, with_system: bool) -> Vec<ChatMessage> {
         let mut msgs = Vec::new();
         if with_system {
-            msgs.push(ChatMessage {
-                role: "system".to_string(),
-                content: "System prompt".to_string(),
-            });
+            msgs.push(ChatMessage::new("system", "System prompt"));
         }
         for i in 0..n {
-            msgs.push(ChatMessage {
-                role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
-                content: format!("message {}", i),
-            });
+            msgs.push(ChatMessage::new(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                format!("message {}", i),
+            ));
         }
         msgs
     }

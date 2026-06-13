@@ -561,9 +561,12 @@ fn spawn_long_task(
         let model = agent.model.clone();
         let temp = agent.temperature;
         let max_iter = agent.max_iterations;
-        // Append a hint to the system prompt so the agent uses MessageTool
+        // Append a hint to the system prompt so the agent uses MessageTool.
+        // `build_system_prompt` already folds in identity + tool protocol + tool
+        // catalog + skills + the agent's configured `system_extra`; the hint is
+        // appended last so the background-task instruction has the final word.
         let system_extra = {
-            let base = agent.system_extra.clone().unwrap_or_default();
+            let base = agent.build_system_prompt(&tools);
             let hint = "\n\nIMPORTANT: You are running as a background task. \
                         Use the `message` tool to deliver your final result and any \
                         intermediate progress updates to the user.";

@@ -1,5 +1,6 @@
 use adaclaw_core::memory::{Category, Memory, RecallScope};
-use adaclaw_core::provider::{ChatMessage, ChatRequest, Provider};
+use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider};
+use tokio::sync::mpsc;
 use adaclaw_core::tool::Tool;
 use adaclaw_memory::session_store::SessionStore;
 use anyhow::{Result, anyhow};
@@ -169,8 +170,43 @@ impl AgentEngine {
         model: &str,
         temp: f64,
     ) -> Result<String> {
-        self.run_tool_loop_with_options(provider, tools, input, model, temp, None, None, &[])
+        self.run_tool_loop_with_options(provider, tools, input, model, temp, None, None, &[], None)
             .await
+    }
+
+    /// Run the tool-call loop, streaming assistant text deltas to `deltas` as
+    /// they are generated, and returning the final assembled text.
+    ///
+    /// Streaming uses [`Provider::chat_stream`]; providers without real token
+    /// streaming fall back to a single delta (the whole message). Note: the
+    /// Tier-2 reflection self-check is **skipped** when streaming (it would
+    /// retroactively rewrite text already shown to the user), and forwarded
+    /// deltas are raw — the final recorded message is still credential-scrubbed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_tool_loop_streaming(
+        &self,
+        provider: &dyn Provider,
+        tools: &[Box<dyn Tool>],
+        input: &str,
+        model: &str,
+        temp: f64,
+        system: Option<&str>,
+        max_iterations: Option<usize>,
+        images: &[adaclaw_core::provider::ImageData],
+        deltas: mpsc::Sender<String>,
+    ) -> Result<String> {
+        self.run_tool_loop_with_options(
+            provider,
+            tools,
+            input,
+            model,
+            temp,
+            system,
+            max_iterations,
+            images,
+            Some(&deltas),
+        )
+        .await
     }
 
     /// Run the tool-call loop with full options.
@@ -185,6 +221,7 @@ impl AgentEngine {
         system: Option<&str>,
         max_iterations: Option<usize>,
         images: &[adaclaw_core::provider::ImageData],
+        deltas: Option<&mpsc::Sender<String>>,
     ) -> Result<String> {
         let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
@@ -339,7 +376,7 @@ impl AgentEngine {
                     messages: &messages,
                     system,
                 };
-                match provider.chat_with_tools(req, &tool_specs, model, temp).await {
+                match stream_or_call(provider, req, &tool_specs, model, temp, deltas).await {
                     Ok(resp) => break Ok(resp),
                     Err(e) if detect_context_window_error(&e) && context_retry < 2 => {
                         warn!(
@@ -407,16 +444,19 @@ impl AgentEngine {
                 //   and only for complex or error-laden tasks.
                 //
                 // 95%+ of ordinary single-step conversations pay zero extra cost.
-                let final_response =
-                    if needs_reflection_tier1(input, &scrubbed, had_tool_error, iteration) {
-                        debug!(
-                            iteration,
-                            had_tool_error, "Tier 1 reflection triggered — running LLM self-check"
-                        );
-                        tiered_reflect(provider, model, input, scrubbed, &messages).await
-                    } else {
-                        scrubbed
-                    };
+                // Reflection is skipped while streaming: it would retroactively
+                // rewrite text the user has already seen streamed.
+                let final_response = if deltas.is_none()
+                    && needs_reflection_tier1(input, &scrubbed, had_tool_error, iteration)
+                {
+                    debug!(
+                        iteration,
+                        had_tool_error, "Tier 1 reflection triggered — running LLM self-check"
+                    );
+                    tiered_reflect(provider, model, input, scrubbed, &messages).await
+                } else {
+                    scrubbed
+                };
 
                 // Add assistant reply to persistent history
                 self.push_history(MessageEntry::new(
@@ -1000,6 +1040,46 @@ struct PendingCall {
     args: serde_json::Value,
 }
 
+/// Run one LLM call, optionally streaming text deltas to `deltas`.
+///
+/// - `deltas == None`  → a normal [`Provider::chat_with_tools`] call.
+/// - `deltas == Some`  → a [`Provider::chat_stream`] call; each `Delta` is
+///   forwarded to the sink (best-effort — a dropped receiver just stops
+///   forwarding) and the terminal `Done` chunk's [`ChatResponse`] is returned.
+///
+/// Either way the return value is the same `ChatResponse` the tool loop needs,
+/// so the rest of the loop is identical for streaming and non-streaming.
+async fn stream_or_call(
+    provider: &dyn Provider,
+    req: ChatRequest<'_>,
+    tools: &[adaclaw_core::tool::ToolSpec],
+    model: &str,
+    temp: f64,
+    deltas: Option<&mpsc::Sender<String>>,
+) -> Result<ChatResponse> {
+    use adaclaw_core::provider::StreamChunk;
+    use futures_util::StreamExt;
+
+    let sink = match deltas {
+        None => return provider.chat_with_tools(req, tools, model, temp).await,
+        Some(s) => s,
+    };
+
+    let mut stream = provider.chat_stream(req, tools, model, temp).await?;
+    let mut final_resp: Option<ChatResponse> = None;
+    while let Some(item) = stream.next().await {
+        match item? {
+            StreamChunk::Delta(text) => {
+                // Best-effort: if the consumer hung up, keep draining so the
+                // provider call still completes and history stays consistent.
+                let _ = sink.send(text).await;
+            }
+            StreamChunk::Done(resp) => final_resp = Some(resp),
+        }
+    }
+    final_resp.ok_or_else(|| anyhow!("stream ended without a Done chunk"))
+}
+
 /// Parse `<tool_call>` blocks out of assistant text and normalize them,
 /// de-duplicating exact-duplicate calls (some models repeat a call in prose).
 fn collect_text_tool_calls(content: &str) -> Result<Vec<PendingCall>> {
@@ -1173,6 +1253,85 @@ mod tests {
             out, "done",
             "native tool_call + tool_result must round-trip back to the provider"
         );
+    }
+
+    // ── streaming ─────────────────────────────────────────────────────────────
+
+    /// A provider whose `chat_stream` emits several text deltas then a Done.
+    struct StreamingProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for StreamingProvider {
+        fn name(&self) -> &str {
+            "streaming"
+        }
+        fn capabilities(&self) -> adaclaw_core::provider::ProviderCapabilities {
+            adaclaw_core::provider::ProviderCapabilities {
+                native_tool_calling: false,
+                vision: false,
+                streaming: true,
+            }
+        }
+        async fn chat(
+            &self,
+            _req: ChatRequest<'_>,
+            _model: &str,
+            _temp: f64,
+        ) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: "Hello, world".to_string(),
+                ..Default::default()
+            })
+        }
+        async fn chat_stream(
+            &self,
+            _req: ChatRequest<'_>,
+            _tools: &[adaclaw_core::tool::ToolSpec],
+            _model: &str,
+            _temp: f64,
+        ) -> Result<adaclaw_core::provider::ChatStream> {
+            use adaclaw_core::provider::StreamChunk;
+            let chunks: Vec<Result<StreamChunk>> = vec![
+                Ok(StreamChunk::Delta("Hello".to_string())),
+                Ok(StreamChunk::Delta(", ".to_string())),
+                Ok(StreamChunk::Delta("world".to_string())),
+                Ok(StreamChunk::Done(ChatResponse {
+                    content: "Hello, world".to_string(),
+                    ..Default::default()
+                })),
+            ];
+            Ok(Box::pin(futures_util::stream::iter(chunks)))
+        }
+        async fn chat_with_system(
+            &self,
+            _s: Option<&str>,
+            _m: &str,
+            _mo: &str,
+            _t: f64,
+        ) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_streaming_forwards_deltas_in_order() {
+        let engine = AgentEngine::new();
+        let provider = StreamingProvider;
+        let tools: Vec<Box<dyn Tool>> = vec![];
+        // Buffer larger than the number of deltas so the engine never blocks on
+        // send() without a concurrent reader (we drain after it returns).
+        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let out = engine
+            .run_tool_loop_streaming(&provider, &tools, "hi", "m", 0.0, None, None, &[], tx)
+            .await
+            .unwrap();
+
+        let mut got = Vec::new();
+        while let Ok(d) = rx.try_recv() {
+            got.push(d);
+        }
+        assert_eq!(got, vec!["Hello", ", ", "world"], "deltas forwarded in order");
+        assert_eq!(out, "Hello, world", "final text equals the concatenated deltas");
     }
 
     #[test]

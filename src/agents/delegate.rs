@@ -222,6 +222,7 @@ impl Tool for DelegateTool {
                     system_extra.as_deref(),
                     Some(max_iterations),
                     &[],
+                    None,
                 ),
             )
             .await;

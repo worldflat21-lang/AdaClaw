@@ -1040,6 +1040,7 @@ async fn agent_dispatch_loop(
                             Some(system_prompt.as_str()),
                             Some(max_iterations),
                             &images,
+                            None,
                         )
                         .await;
                     drop(engine); // 显式释放锁，让其他 session 消息可继续处理

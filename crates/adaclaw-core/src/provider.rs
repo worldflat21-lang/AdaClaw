@@ -1,6 +1,7 @@
 use crate::tool::ToolSpec;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -142,6 +143,24 @@ pub struct ChatResponse {
     pub usage: Option<Usage>,
 }
 
+/// One item in a streaming chat response.
+///
+/// A stream yields zero or more [`StreamChunk::Delta`] (incremental text) and
+/// exactly one terminal [`StreamChunk::Done`] carrying the fully-assembled
+/// [`ChatResponse`] (complete content + any `tool_calls` + `usage`). Consumers
+/// render deltas live and use `Done` for the authoritative final result (e.g.
+/// to drive the agent's tool loop).
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Incremental text appended to the assistant message.
+    Delta(String),
+    /// Terminal chunk with the complete response.
+    Done(ChatResponse),
+}
+
+/// A boxed, owned stream of [`StreamChunk`]s.
+pub type ChatStream = BoxStream<'static, Result<StreamChunk>>;
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
@@ -171,6 +190,29 @@ pub trait Provider: Send + Sync {
     ) -> Result<ChatResponse> {
         let _ = tools;
         self.chat(req, model, temp).await
+    }
+
+    /// Stream a chat response as [`StreamChunk`]s.
+    ///
+    /// The default implementation is **non-incremental**: it runs the regular
+    /// [`Provider::chat_with_tools`] and emits the whole result as a single
+    /// `Delta` followed by `Done`. This keeps every provider usable through the
+    /// streaming API immediately; providers whose API supports server-sent
+    /// token streaming override this to emit real per-token deltas.
+    async fn chat_stream(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatStream> {
+        let resp = self.chat_with_tools(req, tools, model, temp).await?;
+        let mut chunks: Vec<Result<StreamChunk>> = Vec::new();
+        if !resp.content.is_empty() {
+            chunks.push(Ok(StreamChunk::Delta(resp.content.clone())));
+        }
+        chunks.push(Ok(StreamChunk::Done(resp)));
+        Ok(Box::pin(futures_util::stream::iter(chunks)))
     }
 
     async fn chat_with_system(

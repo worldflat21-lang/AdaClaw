@@ -15,6 +15,7 @@ adaclaw-core = { path = "../adaclaw-core", version = "0.1.0" }
 adaclaw-security = { path = "../adaclaw-security", version = "0.1.0" }
 axum = "0.7"
 tokio = { version = "1.36", features = ["full"] }
+tokio-stream = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.7", features = ["v4", "serde"] }

@@ -47,6 +47,7 @@ pub fn build_router(whatsapp: Option<WhatsAppRouteState>) -> Router {
     // P0-3: 受保护路由（需要 Bearer Token 认证）
     let protected = Router::new()
         .route("/v1/chat", post(crate::routes::chat::chat))
+        .route("/v1/chat/stream", post(crate::routes::chat::chat_stream))
         .route("/v1/stop", post(crate::routes::stop::stop))
         .layer(middleware::from_fn(require_auth));
 

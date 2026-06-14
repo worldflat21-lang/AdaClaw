@@ -911,6 +911,13 @@ async fn agent_dispatch_loop(
                     }
                 };
                 let raw_images = collect_inbound_images(&msg.content, &msg.metadata);
+                // When present (HTTP /v1/chat/stream), deltas are streamed to this
+                // id via the server's stream registry instead of one OutboundMessage.
+                let stream_id = msg
+                    .metadata
+                    .get("stream_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
 
                 // ── 路由到目标 Agent ──────────────────────────────────────────
                 let agent_id = router.route_or(&msg, registry.default_agent_id());
@@ -1030,6 +1037,60 @@ async fn agent_dispatch_loop(
 
                     // P0-1: 锁定持久 engine（同一 session 串行化；跨轮次历史保留）
                     let engine = engine_arc.lock().await;
+
+                    // ── Streaming path (HTTP /v1/chat/stream) ────────────────────
+                    // Forward assistant text deltas to the SSE response via the
+                    // server's stream registry; no single OutboundMessage is sent.
+                    if let Some(sid) = stream_id {
+                        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+                        let sid_fwd = sid.clone();
+                        let fwd = tokio::spawn(async move {
+                            while let Some(d) = rx.recv().await {
+                                adaclaw_server::routes::chat::push_stream(
+                                    &sid_fwd,
+                                    adaclaw_server::routes::chat::StreamItem::Delta(d),
+                                );
+                            }
+                        });
+                        let r = engine
+                            .run_tool_loop_streaming(
+                                provider.as_ref(),
+                                &tools,
+                                &text,
+                                &model,
+                                temperature,
+                                Some(system_prompt.as_str()),
+                                Some(max_iterations),
+                                &images,
+                                tx,
+                            )
+                            .await;
+                        drop(engine);
+                        let _ = fwd.await; // drain remaining deltas
+                        let success = r.is_ok();
+                        match r {
+                            Ok(_) => adaclaw_server::routes::chat::push_stream(
+                                &sid,
+                                adaclaw_server::routes::chat::StreamItem::Done,
+                            ),
+                            Err(e) => {
+                                error!(agent = %agent_id_owned, error = %e, "Agent error (streaming)");
+                                adaclaw_server::routes::chat::push_stream(
+                                    &sid,
+                                    adaclaw_server::routes::chat::StreamItem::Error(e.to_string()),
+                                );
+                            }
+                        }
+                        observer_ref.record_event(&ObserverEvent::AgentTurnEnd {
+                            agent_id: agent_id_owned.clone(),
+                            provider: String::new(),
+                            model: model.clone(),
+                            duration: turn_start.elapsed(),
+                            success,
+                        });
+                        return;
+                    }
+
                     let result = engine
                         .run_tool_loop_with_options(
                             provider.as_ref(),

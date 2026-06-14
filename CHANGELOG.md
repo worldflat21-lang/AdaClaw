@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Native tool calling**: providers send tools via their API and return structured `tool_calls` (OpenAI + 10 OpenAI-compatible vendors via one impl; Anthropic content blocks). The engine runs a dual path — native when the provider supports it, text-parse fallback otherwise — forwarded through `ReliabilityChain`.
+- **System-prompt assembly**: identity + tool-call protocol + tool catalog + skills + `system_extra`, wired into the daemon and cron paths (revives the previously-unused identity/skills loaders).
+- **Streaming output**: token-by-token Server-Sent Events for OpenAI, every OpenAI-compatible provider, and Anthropic; new `POST /v1/chat/stream` endpoint, `Provider::chat_stream`, and engine streaming loop (native tool calling preserved while streaming).
+- **Vision / multimodal input**: send images to vision-capable models over HTTP (`images` in the chat request), Telegram (photo download), or the CLI (`/img <path>`); gated on the provider's vision capability.
+- **Token-aware compaction**: rolling summarization triggers on real `prompt_tokens` usage, not only message count.
+- **`adaclaw models`**: list a provider's live model catalog via `Provider::list_models()`.
+- **Env-var API keys for all providers**: conventional names (`DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, `ZAI_API_KEY`, `MOONSHOT_API_KEY`, …) plus the namespaced `ADACLAW_<NAME>_API_KEY` form.
+
+### Changed
+- Removed the duplicate standalone `deepseek` / `openrouter` providers (superseded by the table-driven OpenAI-compatible implementation); Groq's Whisper transcription helper is retained.
+
 ### Planned
 - Web UI (AdaClaw Dashboard)
 - PostgreSQL memory backend for distributed deployments

@@ -157,10 +157,13 @@ docker compose logs -f
 | **Ollama** | llama3, mistral, qwen, … | 完全本地，无需 API Key |
 | **通义千问（Qwen）** | qwen-max, qwen-plus, qwen2.5-*, … | OpenAI 兼容 |
 | **Kimi（Moonshot）** | kimi-latest, kimi-k1.5, moonshot-v1-*, … | OpenAI 兼容 |
-| **智谱 GLM** | glm-4, glm-4-flash, … | OpenAI 兼容 |
-| **任意 OpenAI 兼容端点** | — | 自定义 `api_base` |
+| **智谱 GLM** | glm-4.6, glm-4-flash, … | OpenAI 兼容 |
+| **Mistral · Groq · MiniMax** | — | OpenAI 兼容 |
+| **任意 OpenAI 兼容端点** | — | 自定义 `base_url` |
 
-`ReliabilityChain` 对任意 Provider 序列提供**指数退避 + circuit breaker**：某个 Provider 故障时自动切换到下一个，退避节奏为 1/5/25/60 分钟。
+模型名**原样**发给 API，所以任意当前模型都能直接用、无需更新 AdaClaw——用 `adaclaw models --provider <name>` 可列出某 Provider 的实时模型清单。Key 可写在 `config.toml`，也可用环境变量（`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、Qwen 用 `DASHSCOPE_API_KEY`、GLM 用 `ZAI_API_KEY`、Kimi 用 `MOONSHOT_API_KEY`，或 `ADACLAW_<NAME>_API_KEY`）。
+
+所有 Provider 都支持**逐 token 流式输出**（Server-Sent Events）。`ReliabilityChain` 对任意 Provider 序列提供**指数退避 + circuit breaker**：某个 Provider 故障时自动切换到下一个，退避节奏为 1/5/25/60 分钟。
 
 ---
 
@@ -173,6 +176,10 @@ docker compose logs -f
 ### 🧠 RRF 混合记忆
 
 FTS5 关键词检索 + 本地向量嵌入（FastEmbed，AllMiniLML6v2，384 维，零 API 费用），通过 **Reciprocal Rank Fusion** 融合排名。内置话题切换检测，在每次 recall 前自动剪裁过期上下文。无需外部 Embedding 服务。
+
+### 🌊 流式输出 & 👁️ 视觉输入
+
+回复通过 Server-Sent Events **逐 token 流式**返回（`POST /v1/chat/stream`），覆盖 OpenAI、Anthropic 及所有 OpenAI 兼容 Provider——流式下仍保留原生 tool calling。可向支持视觉的模型发送**图片**：HTTP（chat 请求里的 `images`）、Telegram（图片消息）或 CLI（`/img <path>`）；daemon 仅在当前模型支持视觉时才附带图片。
 
 ### 🧩 模块化与原生生态支持
 
@@ -258,12 +265,13 @@ adaclaw <COMMAND>
 Commands:
   run      启动守护进程（渠道 + gateway）
   chat     交互式 CLI 对话
-  daemon   管理后台守护进程  start | stop | restart | status
+  models   列出某 Provider 的实时模型  [--provider <name>]
   onboard  首次运行配置向导
   doctor   系统健康检查
-  config   显示当前生效配置
-  status   查询守护进程状态
+  config   校验 / 查看配置  (check [--file] | version)
+  status   查询守护进程状态（HTTP）
   stop     正常停止或触发紧急停止
+  skill    技能管理  (list | install | remove | audit)
   help     帮助
 ```
 

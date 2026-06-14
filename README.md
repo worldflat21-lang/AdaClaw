@@ -157,10 +157,13 @@ The bundled `docker-compose.yml` is hardened: read-only rootfs, dropped capabili
 | **Ollama** | llama3, mistral, qwen, … | Fully local — no API key |
 | **Qwen (Alibaba)** | qwen-max, qwen-plus, qwen2.5-*, … | OpenAI-compat |
 | **Kimi (Moonshot)** | kimi-latest, kimi-k1.5, moonshot-v1-*, … | OpenAI-compat |
-| **GLM (Zhipu)** | glm-4, glm-4-flash, … | OpenAI-compat |
-| **Any OpenAI-compat** | — | Custom `api_base` |
+| **GLM (Zhipu)** | glm-4.6, glm-4-flash, … | OpenAI-compat |
+| **Mistral · Groq · MiniMax** | — | OpenAI-compat |
+| **Any OpenAI-compat** | — | Custom `base_url` |
 
-`ReliabilityChain` wraps any provider sequence with **exponential backoff + circuit breaker**. If one degrades, the next takes over automatically.
+Model names are sent to the API **as-is**, so any *current* model works without an AdaClaw update — run `adaclaw models --provider <name>` to list a provider's live catalog. Keys can be set in `config.toml` or via env vars (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY` for Qwen, `ZAI_API_KEY` for GLM, `MOONSHOT_API_KEY` for Kimi, or `ADACLAW_<NAME>_API_KEY`).
+
+All providers stream output **token-by-token** (Server-Sent Events). `ReliabilityChain` wraps any provider sequence with **exponential backoff + circuit breaker**. If one degrades, the next takes over automatically.
 
 ---
 
@@ -173,6 +176,10 @@ Single Rust binary, no runtime dependencies. RAM footprint < 5 MB, cold-start < 
 ### 🧠 RRF Hybrid Memory
 
 FTS5 keyword search + local vector embeddings (FastEmbed, AllMiniLML6v2, 384-dim, zero API cost) merged via **Reciprocal Rank Fusion**. Automatic topic-shift detection prunes stale context before each recall. No external embedding service needed.
+
+### 🌊 Streaming Output & 👁️ Vision Input
+
+Replies stream **token-by-token** over Server-Sent Events (`POST /v1/chat/stream`) for OpenAI, Anthropic, and every OpenAI-compatible provider — native tool calling is preserved while streaming. Send **images** to vision-capable models over HTTP (`images` in the chat request), Telegram (photo), or the CLI (`/img <path>`); the daemon attaches them only when the active model supports vision.
 
 ### 🧩 Modularity & Native Ecosystem Support
 
@@ -258,12 +265,13 @@ adaclaw <COMMAND>
 Commands:
   run      Start daemon (channels + gateway)
   chat     Interactive CLI chat
-  daemon   Manage background daemon  start | stop | restart | status
+  models   List a provider's live models  [--provider <name>]
   onboard  First-run configuration wizard
   doctor   System health check
-  config   Show active configuration
-  status   Show daemon status
+  config   Validate / inspect config  (check [--file] | version)
+  status   Show daemon status (HTTP)
   stop     Graceful stop or emergency stop
+  skill    Manage skills  (list | install | remove | audit)
   help     Print help
 ```
 

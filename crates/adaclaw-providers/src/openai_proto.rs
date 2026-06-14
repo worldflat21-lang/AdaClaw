@@ -226,8 +226,9 @@ impl OpenAiStreamAssembler {
 
 /// Pop one complete line (terminated by `\n`) from `buf`, without the trailing
 /// newline/CR. Returns `None` when no complete line is buffered yet — the
-/// partial remainder stays in `buf` for the next read.
-fn take_sse_line(buf: &mut String) -> Option<String> {
+/// partial remainder stays in `buf` for the next read. Generic SSE framing,
+/// shared with the Anthropic streaming parser.
+pub(crate) fn take_sse_line(buf: &mut String) -> Option<String> {
     let pos = buf.find('\n')?;
     let line = buf[..pos].trim_end_matches('\r').to_string();
     buf.drain(..=pos);

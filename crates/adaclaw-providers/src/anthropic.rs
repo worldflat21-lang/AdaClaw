@@ -1,7 +1,8 @@
 use crate::error::ProviderError;
 use crate::registry::ProviderSpec;
 use adaclaw_core::provider::{
-    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderCapabilities, ToolCall, Usage,
+    ChatMessage, ChatRequest, ChatResponse, ChatStream, Provider, ProviderCapabilities,
+    StreamChunk, ToolCall, Usage,
 };
 use adaclaw_core::tool::ToolSpec;
 use anyhow::Result;
@@ -263,6 +264,76 @@ impl AnthropicProvider {
             usage,
         })
     }
+
+    /// Streaming variant of [`Self::chat_inner`]: POST with `stream: true` and
+    /// parse Anthropic's SSE events into [`StreamChunk`]s.
+    async fn stream_messages(&self, body: Value) -> Result<ChatStream> {
+        use futures_util::StreamExt;
+
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Anthropic API key not set"))?;
+
+        let resp = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", key.expose_secret())
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow::Error::new(ProviderError::from_status(
+                status,
+                &text,
+                retry_after,
+            )));
+        }
+
+        let s = async_stream::stream! {
+            let byte_stream = resp.bytes_stream();
+            futures_util::pin_mut!(byte_stream);
+            let mut buf = String::new();
+            let mut asm = AnthropicStreamAssembler::default();
+
+            while let Some(chunk) = byte_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        yield Err(anyhow::Error::new(e));
+                        return;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line) = crate::openai_proto::take_sse_line(&mut buf) {
+                    let line = line.trim();
+                    // Anthropic events carry their type in the JSON; the `event:`
+                    // line is redundant, so we only parse `data:` payloads.
+                    let data = match line.strip_prefix("data:") {
+                        Some(d) => d.trim(),
+                        None => continue,
+                    };
+                    if let Ok(json) = serde_json::from_str::<Value>(data)
+                        && let Some(delta) = asm.push(&json)
+                    {
+                        yield Ok(StreamChunk::Delta(delta));
+                    }
+                }
+            }
+            yield Ok(StreamChunk::Done(asm.finish()));
+        };
+
+        Ok(Box::pin(s))
+    }
 }
 
 #[async_trait]
@@ -293,6 +364,30 @@ impl Provider for AnthropicProvider {
         self.chat_inner(req, tools, model, temp).await
     }
 
+    async fn chat_stream(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<ChatStream> {
+        let messages = Self::build_messages(&req);
+        let mut body = serde_json::json!({
+            "model": model,
+            "max_tokens": self.max_tokens,
+            "messages": messages,
+            "temperature": temp,
+            "stream": true,
+        });
+        if let Some(sys) = Self::fold_system(req.system, req.messages) {
+            body["system"] = Value::String(sys);
+        }
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(Self::build_tools(tools));
+        }
+        self.stream_messages(body).await
+    }
+
     async fn chat_with_system(
         &self,
         system: Option<&str>,
@@ -306,6 +401,117 @@ impl Provider for AnthropicProvider {
             system,
         };
         Ok(self.chat(req, model, temp).await?.content)
+    }
+}
+
+// ── Streaming assembler ──────────────────────────────────────────────────────
+
+/// A content block being assembled from the stream. Text blocks stream straight
+/// into the response content; tool-use blocks accumulate `partial_json`
+/// fragments (keyed by content-block index) into the call's arguments.
+#[derive(Default, Clone)]
+struct AnthBlock {
+    is_tool: bool,
+    id: String,
+    name: String,
+    json: String,
+}
+
+/// Assembles a streamed Anthropic message from its SSE events.
+///
+/// Dispatches on the event's `type`: `message_start` (input tokens),
+/// `content_block_start` (opens a text or tool_use block), `content_block_delta`
+/// (`text_delta` → content, `input_json_delta` → tool args), `message_delta`
+/// (output tokens). `push` returns the text delta for an event, if any.
+#[derive(Default)]
+pub struct AnthropicStreamAssembler {
+    content: String,
+    blocks: Vec<AnthBlock>,
+    input_tokens: u32,
+    output_tokens: u32,
+}
+
+impl AnthropicStreamAssembler {
+    pub fn push(&mut self, evt: &Value) -> Option<String> {
+        match evt["type"].as_str() {
+            Some("message_start") => {
+                self.input_tokens = evt["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
+                None
+            }
+            Some("content_block_start") => {
+                let idx = evt["index"].as_u64().unwrap_or(0) as usize;
+                if self.blocks.len() <= idx {
+                    self.blocks.resize(idx + 1, AnthBlock::default());
+                }
+                let cb = &evt["content_block"];
+                if cb["type"] == "tool_use" {
+                    self.blocks[idx] = AnthBlock {
+                        is_tool: true,
+                        id: cb["id"].as_str().unwrap_or("").to_string(),
+                        name: cb["name"].as_str().unwrap_or("").to_string(),
+                        json: String::new(),
+                    };
+                }
+                None
+            }
+            Some("content_block_delta") => {
+                let d = &evt["delta"];
+                match d["type"].as_str() {
+                    Some("text_delta") => match d["text"].as_str() {
+                        Some(t) if !t.is_empty() => {
+                            self.content.push_str(t);
+                            Some(t.to_string())
+                        }
+                        _ => None,
+                    },
+                    Some("input_json_delta") => {
+                        let idx = evt["index"].as_u64().unwrap_or(0) as usize;
+                        if let (Some(b), Some(frag)) =
+                            (self.blocks.get_mut(idx), d["partial_json"].as_str())
+                        {
+                            b.json.push_str(frag);
+                        }
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            Some("message_delta") => {
+                if let Some(o) = evt["usage"]["output_tokens"].as_u64() {
+                    self.output_tokens = o as u32;
+                }
+                None
+            }
+            _ => None, // content_block_stop, message_stop, ping
+        }
+    }
+
+    pub fn finish(self) -> ChatResponse {
+        let tool_calls = self
+            .blocks
+            .into_iter()
+            .filter(|b| b.is_tool && !b.name.is_empty())
+            .map(|b| ToolCall {
+                id: b.id,
+                name: b.name,
+                arguments: serde_json::from_str(&b.json).unwrap_or(Value::Null),
+            })
+            .collect();
+        let usage = if self.input_tokens > 0 || self.output_tokens > 0 {
+            Some(Usage {
+                prompt_tokens: self.input_tokens,
+                completion_tokens: self.output_tokens,
+                total_tokens: self.input_tokens + self.output_tokens,
+            })
+        } else {
+            None
+        };
+        ChatResponse {
+            content: self.content,
+            reasoning_content: None,
+            tool_calls,
+            usage,
+        }
     }
 }
 
@@ -428,5 +634,34 @@ mod tests {
     fn fold_system_none_when_nothing() {
         let history = vec![ChatMessage::new("user", "hi")];
         assert!(AnthropicProvider::fold_system(None, &history).is_none());
+    }
+
+    // ── streaming assembler ───────────────────────────────────────────────────
+
+    #[test]
+    fn stream_assembler_text_tool_and_usage() {
+        let mut asm = AnthropicStreamAssembler::default();
+        asm.push(&serde_json::json!({"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1}}}));
+        asm.push(&serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}));
+        let d1 = asm.push(&serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}));
+        let d2 = asm.push(&serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}));
+        assert_eq!(d1.as_deref(), Some("Hel"));
+        assert_eq!(d2.as_deref(), Some("lo"));
+        // tool_use block at index 1, args streamed as partial_json fragments
+        asm.push(&serde_json::json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell"}}));
+        asm.push(&serde_json::json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":"}}));
+        asm.push(&serde_json::json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"ls\"}"}}));
+        asm.push(&serde_json::json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}));
+
+        let resp = asm.finish();
+        assert_eq!(resp.content, "Hello");
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id, "toolu_1");
+        assert_eq!(resp.tool_calls[0].name, "shell");
+        assert_eq!(resp.tool_calls[0].arguments["cmd"], "ls");
+        let u = resp.usage.unwrap();
+        assert_eq!(u.prompt_tokens, 5);
+        assert_eq!(u.completion_tokens, 7);
+        assert_eq!(u.total_tokens, 12);
     }
 }

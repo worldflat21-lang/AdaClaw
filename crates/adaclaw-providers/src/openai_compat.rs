@@ -378,6 +378,39 @@ impl Provider for OpenAiCompatProvider {
         self.chat_inner(req, tools, model, temp).await
     }
 
+    async fn chat_stream(
+        &self,
+        req: ChatRequest<'_>,
+        tools: &[ToolSpec],
+        model: &str,
+        temp: f64,
+    ) -> Result<adaclaw_core::provider::ChatStream> {
+        let messages = crate::openai_proto::build_messages(&req);
+        let effective_temp = self
+            .def
+            .min_temperature
+            .map(|min| temp.max(min))
+            .unwrap_or(temp);
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "temperature": effective_temp,
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(crate::openai_proto::build_tools(tools));
+        }
+        let bearer = self.key.as_ref().map(|k| k.expose_secret().to_string());
+        crate::openai_proto::stream_chat(
+            &self.client,
+            format!("{}/chat/completions", self.base_url),
+            bearer,
+            body,
+        )
+        .await
+    }
+
     async fn chat_with_system(
         &self,
         system: Option<&str>,

@@ -6,8 +6,11 @@
 //! that format in one place means native tool calling is implemented — and
 //! tested — exactly once, and every OpenAI-compatible vendor inherits it.
 
-use adaclaw_core::provider::{ChatRequest, ToolCall, Usage};
+use adaclaw_core::provider::{
+    ChatRequest, ChatResponse, ChatStream, StreamChunk, ToolCall, Usage,
+};
 use adaclaw_core::tool::ToolSpec;
+use anyhow::Result;
 use serde_json::{Value, json};
 
 /// Build the `messages` array, faithfully re-encoding assistant tool-call turns
@@ -138,6 +141,171 @@ pub fn parse_usage(data: &Value) -> Option<Usage> {
     })
 }
 
+// ── Streaming (Server-Sent Events) ───────────────────────────────────────────
+
+/// Accumulates one tool call across streamed deltas. OpenAI sends a tool call's
+/// `id`/`name` once and its `arguments` JSON in fragments, keyed by `index`.
+#[derive(Default, Clone)]
+struct ToolCallBuilder {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Assembles a streamed OpenAI chat completion from its `data:` chunks.
+///
+/// [`push`](Self::push) is fed each chunk's JSON and returns the text delta in
+/// that chunk (if any) for live display; [`finish`](Self::finish) produces the
+/// complete [`ChatResponse`] (content + assembled tool calls + usage).
+#[derive(Default)]
+pub struct OpenAiStreamAssembler {
+    content: String,
+    tool_calls: Vec<ToolCallBuilder>,
+    usage: Option<Usage>,
+}
+
+impl OpenAiStreamAssembler {
+    /// Process one SSE chunk; returns the text delta it contributed, if any.
+    pub fn push(&mut self, chunk: &Value) -> Option<String> {
+        // usage arrives in a final, choices-empty chunk (stream_options.include_usage)
+        if let Some(u) = parse_usage(chunk) {
+            self.usage = Some(u);
+        }
+        let delta = &chunk["choices"][0]["delta"];
+
+        // Tool-call fragments, accumulated by index.
+        if let Some(tcs) = delta["tool_calls"].as_array() {
+            for tc in tcs {
+                let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                if self.tool_calls.len() <= idx {
+                    self.tool_calls.resize(idx + 1, ToolCallBuilder::default());
+                }
+                let b = &mut self.tool_calls[idx];
+                if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
+                    b.id = id.to_string();
+                }
+                let f = &tc["function"];
+                if let Some(name) = f["name"].as_str().filter(|s| !s.is_empty()) {
+                    b.name = name.to_string();
+                }
+                if let Some(args) = f["arguments"].as_str() {
+                    b.arguments.push_str(args);
+                }
+            }
+        }
+
+        match delta["content"].as_str() {
+            Some(text) if !text.is_empty() => {
+                self.content.push_str(text);
+                Some(text.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// Produce the final response once the stream ends.
+    pub fn finish(self) -> ChatResponse {
+        let tool_calls = self
+            .tool_calls
+            .into_iter()
+            .filter(|b| !b.name.is_empty())
+            .map(|b| ToolCall {
+                id: b.id,
+                name: b.name,
+                arguments: serde_json::from_str(&b.arguments).unwrap_or(Value::Null),
+            })
+            .collect();
+        ChatResponse {
+            content: self.content,
+            reasoning_content: None,
+            tool_calls,
+            usage: self.usage,
+        }
+    }
+}
+
+/// Pop one complete line (terminated by `\n`) from `buf`, without the trailing
+/// newline/CR. Returns `None` when no complete line is buffered yet — the
+/// partial remainder stays in `buf` for the next read.
+fn take_sse_line(buf: &mut String) -> Option<String> {
+    let pos = buf.find('\n')?;
+    let line = buf[..pos].trim_end_matches('\r').to_string();
+    buf.drain(..=pos);
+    Some(line)
+}
+
+/// Issue a streaming OpenAI-compatible chat request and return a stream of
+/// [`StreamChunk`]s. `body` must already include `"stream": true`.
+///
+/// HTTP/auth errors surface as the returned `Result`'s `Err` (so the engine's
+/// context-window retry still works); a mid-stream transport error surfaces as
+/// an `Err` item inside the stream.
+pub async fn stream_chat(
+    client: &reqwest::Client,
+    url: String,
+    bearer: Option<String>,
+    body: Value,
+) -> Result<ChatStream> {
+    use futures_util::StreamExt;
+
+    let mut builder = client.post(&url).json(&body);
+    if let Some(b) = &bearer {
+        builder = builder.header("Authorization", format!("Bearer {}", b));
+    }
+    let resp = builder.send().await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        let text = resp.text().await.unwrap_or_default();
+        return Err(anyhow::Error::new(crate::error::ProviderError::from_status(
+            status,
+            &text,
+            retry_after,
+        )));
+    }
+
+    let s = async_stream::stream! {
+        let byte_stream = resp.bytes_stream();
+        futures_util::pin_mut!(byte_stream);
+        let mut buf = String::new();
+        let mut asm = OpenAiStreamAssembler::default();
+
+        'outer: while let Some(chunk) = byte_stream.next().await {
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    yield Err(anyhow::Error::new(e));
+                    return;
+                }
+            };
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(line) = take_sse_line(&mut buf) {
+                let line = line.trim();
+                let data = match line.strip_prefix("data:") {
+                    Some(d) => d.trim(),
+                    None => continue, // skip event:/id:/comments/blank lines
+                };
+                if data == "[DONE]" {
+                    break 'outer;
+                }
+                if let Ok(json) = serde_json::from_str::<Value>(data)
+                    && let Some(delta) = asm.push(&json)
+                {
+                    yield Ok(StreamChunk::Delta(delta));
+                }
+            }
+        }
+        yield Ok(StreamChunk::Done(asm.finish()));
+    };
+
+    Ok(Box::pin(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +434,49 @@ mod tests {
     #[test]
     fn parse_usage_none_when_absent() {
         assert!(parse_usage(&json!({"choices": []})).is_none());
+    }
+
+    // ── streaming ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn take_sse_line_splits_and_keeps_partial() {
+        let mut buf = String::from("data: a\r\ndata: b\npart");
+        assert_eq!(take_sse_line(&mut buf).as_deref(), Some("data: a"));
+        assert_eq!(take_sse_line(&mut buf).as_deref(), Some("data: b"));
+        // No trailing newline → partial remains for the next read.
+        assert_eq!(take_sse_line(&mut buf), None);
+        assert_eq!(buf, "part");
+    }
+
+    #[test]
+    fn assembler_collects_text_deltas() {
+        let mut asm = OpenAiStreamAssembler::default();
+        let d1 = asm.push(&json!({"choices":[{"delta":{"content":"Hel"}}]}));
+        let d2 = asm.push(&json!({"choices":[{"delta":{"content":"lo"}}]}));
+        assert_eq!(d1.as_deref(), Some("Hel"));
+        assert_eq!(d2.as_deref(), Some("lo"));
+        let resp = asm.finish();
+        assert_eq!(resp.content, "Hello");
+        assert!(resp.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn assembler_reassembles_tool_call_across_fragments() {
+        let mut asm = OpenAiStreamAssembler::default();
+        // id + name arrive first, arguments stream in fragments.
+        asm.push(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\"comm"}}
+        ]}}]}));
+        asm.push(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"function":{"arguments":"and\":\"ls\"}"}}
+        ]}}]}));
+        // usage in a final chunk
+        asm.push(&json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}));
+        let resp = asm.finish();
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id, "call_1");
+        assert_eq!(resp.tool_calls[0].name, "shell");
+        assert_eq!(resp.tool_calls[0].arguments["command"], "ls");
+        assert_eq!(resp.usage.unwrap().total_tokens, 7);
     }
 }

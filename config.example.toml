@@ -11,9 +11,12 @@
 config_version = 1
 
 # ── Providers ──────────────────────────────────────────────────────────────────
-# At least one provider must be configured. Put the key in `api_key` here; for
-# OpenAI/Anthropic you may instead set the OPENAI_API_KEY / ANTHROPIC_API_KEY
-# environment variable.
+# At least one provider must be configured. Put the key in `api_key` here, or
+# set it via an env var — every provider accepts both the conventional name and
+# a namespaced ADACLAW_<NAME>_API_KEY (env wins over the file):
+#   openai→OPENAI_API_KEY  anthropic→ANTHROPIC_API_KEY  deepseek→DEEPSEEK_API_KEY
+#   glm→ZAI_API_KEY  qwen→DASHSCOPE_API_KEY  moonshot→MOONSHOT_API_KEY
+#   gemini→GEMINI_API_KEY  xai→XAI_API_KEY  groq→GROQ_API_KEY  …
 #
 # Supported (config name): openai, anthropic, gemini, xai (Grok), openrouter,
 # mistral, groq, deepseek, glm (Zhipu), qwen (Alibaba), moonshot (Kimi),

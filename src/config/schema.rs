@@ -115,24 +115,34 @@ impl Config {
     /// Apply environment variable overrides on top of file config.
     /// Priority: env vars > config file.
     fn apply_env_overrides(&mut self) {
-        // ADACLAW_OPENAI_API_KEY → providers["openai"].api_key
-        if let Ok(key) =
-            std::env::var("ADACLAW_OPENAI_API_KEY").or_else(|_| std::env::var("OPENAI_API_KEY"))
-        {
-            self.providers
-                .entry("openai".to_string())
-                .or_default()
-                .api_key = Some(key);
-        }
-
-        // ADACLAW_ANTHROPIC_API_KEY
-        if let Ok(key) = std::env::var("ADACLAW_ANTHROPIC_API_KEY")
-            .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-        {
-            self.providers
-                .entry("anthropic".to_string())
-                .or_default()
-                .api_key = Some(key);
+        // Provider API keys from env vars. For every known provider we accept
+        // the namespaced `ADACLAW_<NAME>_API_KEY` and the conventional bare name
+        // (DEEPSEEK_API_KEY, DASHSCOPE_API_KEY for qwen, ZAI_API_KEY for glm, …).
+        // Env vars override the config file (12-factor secret injection).
+        const PROVIDER_ENV_KEYS: &[(&str, &str)] = &[
+            ("openai", "OPENAI_API_KEY"),
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("openrouter", "OPENROUTER_API_KEY"),
+            ("deepseek", "DEEPSEEK_API_KEY"),
+            ("groq", "GROQ_API_KEY"),
+            ("gemini", "GEMINI_API_KEY"),
+            ("mistral", "MISTRAL_API_KEY"),
+            ("xai", "XAI_API_KEY"),
+            ("qwen", "DASHSCOPE_API_KEY"),
+            ("glm", "ZAI_API_KEY"),
+            ("moonshot", "MOONSHOT_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
+        ];
+        for (name, bare_env) in PROVIDER_ENV_KEYS {
+            let namespaced = format!("ADACLAW_{}_API_KEY", name.to_uppercase());
+            if let Ok(key) = std::env::var(&namespaced).or_else(|_| std::env::var(bare_env))
+                && !key.is_empty()
+            {
+                self.providers
+                    .entry((*name).to_string())
+                    .or_default()
+                    .api_key = Some(key);
+            }
         }
 
         // ADACLAW_OLLAMA_URL
@@ -897,6 +907,41 @@ impl Default for GatewayConfig {
             bind: default_gateway_bind(),
             bearer_token: None,
             cors_enabled: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    // Serialise the env-touching test(s) in this module.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn env_vars_inject_provider_api_keys() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // qwen via the conventional bare name; glm via the namespaced form.
+        // (Unique vars not touched by other tests.)
+        unsafe {
+            std::env::set_var("DASHSCOPE_API_KEY", "sk-qwen-test");
+            std::env::set_var("ADACLAW_GLM_API_KEY", "sk-glm-test");
+        }
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        assert_eq!(
+            cfg.providers.get("qwen").and_then(|p| p.api_key.as_deref()),
+            Some("sk-qwen-test"),
+            "DASHSCOPE_API_KEY should populate the qwen provider"
+        );
+        assert_eq!(
+            cfg.providers.get("glm").and_then(|p| p.api_key.as_deref()),
+            Some("sk-glm-test"),
+            "ADACLAW_GLM_API_KEY should populate the glm provider"
+        );
+        unsafe {
+            std::env::remove_var("DASHSCOPE_API_KEY");
+            std::env::remove_var("ADACLAW_GLM_API_KEY");
         }
     }
 }

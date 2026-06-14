@@ -156,12 +156,7 @@ pub trait Channel: Send + Sync {
     /// - `session_id` — 平台渠道/会话标识符（如 Discord channel ID、Slack channel ID）
     /// - `message_id` — 平台消息 ID
     /// - `emoji`      — Unicode emoji（如 `"👀"`、`"✅"`、`"⚙️"`）
-    async fn add_reaction(
-        &self,
-        session_id: &str,
-        message_id: &str,
-        emoji: &str,
-    ) -> Result<()> {
+    async fn add_reaction(&self, session_id: &str, message_id: &str, emoji: &str) -> Result<()> {
         let _ = (session_id, message_id, emoji);
         Ok(())
     }
@@ -169,15 +164,8 @@ pub trait Channel: Send + Sync {
     /// 移除之前由本 bot 添加的 emoji reaction。
     ///
     /// 默认实现为 no-op。
-    async fn remove_reaction(
-        &self,
-        session_id: &str,
-        message_id: &str,
-        emoji: &str,
-    ) -> Result<()> {
+    async fn remove_reaction(&self, session_id: &str, message_id: &str, emoji: &str) -> Result<()> {
         let _ = (session_id, message_id, emoji);
         Ok(())
     }
 }
-
-

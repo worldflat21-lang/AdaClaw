@@ -6,9 +6,7 @@
 //! that format in one place means native tool calling is implemented — and
 //! tested — exactly once, and every OpenAI-compatible vendor inherits it.
 
-use adaclaw_core::provider::{
-    ChatRequest, ChatResponse, ChatStream, StreamChunk, ToolCall, Usage,
-};
+use adaclaw_core::provider::{ChatRequest, ChatResponse, ChatStream, StreamChunk, ToolCall, Usage};
 use adaclaw_core::tool::ToolSpec;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -263,11 +261,9 @@ pub async fn stream_chat(
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
         let text = resp.text().await.unwrap_or_default();
-        return Err(anyhow::Error::new(crate::error::ProviderError::from_status(
-            status,
-            &text,
-            retry_after,
-        )));
+        return Err(anyhow::Error::new(
+            crate::error::ProviderError::from_status(status, &text, retry_after),
+        ));
     }
 
     let s = async_stream::stream! {
@@ -425,7 +421,8 @@ mod tests {
 
     #[test]
     fn parse_usage_reads_token_counts() {
-        let data = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}});
+        let data =
+            json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}});
         let u = parse_usage(&data).unwrap();
         assert_eq!(u.prompt_tokens, 10);
         assert_eq!(u.completion_tokens, 5);

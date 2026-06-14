@@ -435,7 +435,9 @@ impl AnthropicStreamAssembler {
     pub fn push(&mut self, evt: &Value) -> Option<String> {
         match evt["type"].as_str() {
             Some("message_start") => {
-                self.input_tokens = evt["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
+                self.input_tokens = evt["message"]["usage"]["input_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32;
                 None
             }
             Some("content_block_start") => {
@@ -624,8 +626,7 @@ mod tests {
         assert!(folded.contains("[Conversation summary]: earlier stuff"));
 
         // Top-level system present → both are combined, base first.
-        let folded2 =
-            AnthropicProvider::fold_system(Some("You are Ada."), &history).unwrap();
+        let folded2 = AnthropicProvider::fold_system(Some("You are Ada."), &history).unwrap();
         assert!(folded2.starts_with("You are Ada."));
         assert!(folded2.contains("[Conversation summary]"));
     }

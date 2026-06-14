@@ -399,7 +399,9 @@ pub async fn chat_stream(body: Option<Json<ChatRequest>>) -> Response {
         Ok::<Event, std::convert::Infallible>(ev)
     });
 
-    Sse::new(events).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 #[cfg(test)]

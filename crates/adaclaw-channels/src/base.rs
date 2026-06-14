@@ -172,8 +172,7 @@ impl BaseChannel {
                     || sender_id == trimmed
                     || id_part == allowed
                     || id_part == trimmed
-                    || (!user_part.is_empty()
-                        && (user_part == allowed || user_part == trimmed))
+                    || (!user_part.is_empty() && (user_part == allowed || user_part == trimmed))
                 {
                     return true;
                 }
@@ -348,7 +347,7 @@ mod tests {
         // Glob 匹配不区分大小写
         let ch = BaseChannel::new("test").with_allow_from(vec!["Admin_*".into()]);
         assert!(ch.is_allowed("admin_alice")); // 小写 sender，混合大小写 pattern
-        assert!(ch.is_allowed("ADMIN_BOB"));  // 大写 sender
+        assert!(ch.is_allowed("ADMIN_BOB")); // 大写 sender
     }
 
     #[test]
@@ -361,11 +360,10 @@ mod tests {
 
     #[test]
     fn glob_and_exact_entries_coexist() {
-        let ch = BaseChannel::new("test")
-            .with_allow_from(vec!["123456".into(), "admin_*".into()]);
-        assert!(ch.is_allowed("123456"));        // 精确匹配
+        let ch = BaseChannel::new("test").with_allow_from(vec!["123456".into(), "admin_*".into()]);
+        assert!(ch.is_allowed("123456")); // 精确匹配
         assert!(ch.is_allowed("admin_charlie")); // glob 匹配
-        assert!(!ch.is_allowed("999|bob"));      // 均不匹配
+        assert!(!ch.is_allowed("999|bob")); // 均不匹配
     }
 
     // ── is_group_allowed ──────────────────────────────────────────────────────

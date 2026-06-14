@@ -1,12 +1,12 @@
 use adaclaw_core::memory::{Category, Memory, RecallScope};
 use adaclaw_core::provider::{ChatMessage, ChatRequest, ChatResponse, Provider};
-use tokio::sync::mpsc;
 use adaclaw_core::tool::Tool;
 use adaclaw_memory::session_store::SessionStore;
 use anyhow::{Result, anyhow};
 use futures_util::future::join_all;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 /// Maximum tool-call iterations per conversation turn to prevent infinite loops.
@@ -327,14 +327,13 @@ impl AgentEngine {
                 .get(1)
                 .is_some_and(|m| m.content.starts_with("[Conversation summary]"));
 
-            if let Err(e) =
-                crate::agents::compact::auto_compact_history(
-                    &mut messages,
-                    provider,
-                    model,
-                    last_prompt_tokens,
-                )
-                .await
+            if let Err(e) = crate::agents::compact::auto_compact_history(
+                &mut messages,
+                provider,
+                model,
+                last_prompt_tokens,
+            )
+            .await
             {
                 warn!(error = %e, "auto_compact_history failed, applying hard trim");
                 crate::agents::compact::trim_history(&mut messages);
@@ -488,8 +487,10 @@ impl AgentEngine {
                     None => {
                         warn!("Unknown tool '{}' requested", pc.name);
                         had_tool_error = true;
-                        slots[idx] =
-                            Some((pc.name.clone(), format!("Error: tool '{}' not found", pc.name)));
+                        slots[idx] = Some((
+                            pc.name.clone(),
+                            format!("Error: tool '{}' not found", pc.name),
+                        ));
                     }
                 }
             }
@@ -1120,7 +1121,10 @@ mod tests {
         assert_eq!(calls.len(), 1, "exact-duplicate text calls are deduped");
         assert_eq!(calls[0].name, "shell");
         assert_eq!(calls[0].args["command"], "ls");
-        assert!(calls[0].id.is_none(), "text-parsed calls carry no native id");
+        assert!(
+            calls[0].id.is_none(),
+            "text-parsed calls carry no native id"
+        );
     }
 
     #[test]
@@ -1226,10 +1230,7 @@ mod tests {
                 parameters: self.parameters_schema(),
             }
         }
-        async fn execute(
-            &self,
-            args: serde_json::Value,
-        ) -> Result<adaclaw_core::tool::ToolResult> {
+        async fn execute(&self, args: serde_json::Value) -> Result<adaclaw_core::tool::ToolResult> {
             Ok(adaclaw_core::tool::ToolResult {
                 success: true,
                 output: format!("echoed:{}", args["text"].as_str().unwrap_or("")),
@@ -1330,8 +1331,15 @@ mod tests {
         while let Ok(d) = rx.try_recv() {
             got.push(d);
         }
-        assert_eq!(got, vec!["Hello", ", ", "world"], "deltas forwarded in order");
-        assert_eq!(out, "Hello, world", "final text equals the concatenated deltas");
+        assert_eq!(
+            got,
+            vec!["Hello", ", ", "world"],
+            "deltas forwarded in order"
+        );
+        assert_eq!(
+            out, "Hello, world",
+            "final text equals the concatenated deltas"
+        );
     }
 
     #[test]

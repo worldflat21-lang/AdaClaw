@@ -63,8 +63,7 @@ pub fn render_tool_catalog(tools: &[Box<dyn Tool>]) -> String {
         // Compact (single-line) JSON keeps the prompt small; the schema is for the
         // model to read, not for humans, so pretty-printing wastes tokens.
         let schema = tool.parameters_schema();
-        let schema_str =
-            serde_json::to_string(&schema).unwrap_or_else(|_| "{}".to_string());
+        let schema_str = serde_json::to_string(&schema).unwrap_or_else(|_| "{}".to_string());
         out.push_str("Parameters (JSON schema): ");
         out.push_str(&schema_str);
         out.push_str("\n\n");
@@ -202,8 +201,7 @@ mod tests {
     #[test]
     fn assemble_appends_system_extra_last() {
         let catalog = render_tool_catalog(&fake_tools());
-        let out =
-            assemble_system_prompt("Identity here.", &catalog, "", Some("Be terse."));
+        let out = assemble_system_prompt("Identity here.", &catalog, "", Some("Be terse."));
         let extra_pos = out.find("Be terse.").unwrap();
         let identity_pos = out.find("Identity here.").unwrap();
         assert!(extra_pos > identity_pos, "system_extra must come last");

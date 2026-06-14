@@ -918,11 +918,17 @@ impl TelegramChannel {
                                 .await;
                             return;
                         }
-                        Ok(_) => warn!("Groq transcription returned empty text — using placeholder"),
-                        Err(e) => warn!(error = %e, "Groq transcription failed — using placeholder"),
+                        Ok(_) => {
+                            warn!("Groq transcription returned empty text — using placeholder")
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Groq transcription failed — using placeholder")
+                        }
                     }
                 }
-                Err(e) => warn!(error = %e, "Failed to download Telegram voice/audio — using placeholder"),
+                Err(e) => {
+                    warn!(error = %e, "Failed to download Telegram voice/audio — using placeholder")
+                }
             }
         }
 
@@ -938,10 +944,7 @@ impl TelegramChannel {
             match self.download_file(&file_id).await {
                 Ok(bytes) => {
                     if !caption_text.is_empty() {
-                        metadata.insert(
-                            "caption".to_string(),
-                            Value::String(caption_text.clone()),
-                        );
+                        metadata.insert("caption".to_string(), Value::String(caption_text.clone()));
                     }
                     self.base
                         .handle_content(

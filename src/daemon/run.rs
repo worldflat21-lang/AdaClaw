@@ -424,7 +424,10 @@ pub async fn start_daemon() -> Result<()> {
                                     adaclaw_providers::groq::GroqWhisper::new(groq_key, None);
                                 let lang = ch_cfg.extra.get("transcription_language").cloned();
                                 ch = ch.with_transcriber(Arc::new(whisper), lang);
-                                info!("Telegram '{}': Groq Whisper transcription enabled", chan_name);
+                                info!(
+                                    "Telegram '{}': Groq Whisper transcription enabled",
+                                    chan_name
+                                );
                             }
                             None => warn!(
                                 "Telegram '{}': groq_transcription=true but no Groq API key \
@@ -1345,10 +1348,18 @@ mod tests {
 
     #[test]
     fn detects_common_image_formats_from_magic_bytes() {
-        assert_eq!(detect_image_media_type(&[0x89, b'P', b'N', b'G', 0x0d]), "image/png");
-        assert_eq!(detect_image_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
+        assert_eq!(
+            detect_image_media_type(&[0x89, b'P', b'N', b'G', 0x0d]),
+            "image/png"
+        );
+        assert_eq!(
+            detect_image_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            "image/jpeg"
+        );
         assert_eq!(detect_image_media_type(b"GIF89a"), "image/gif");
-        let webp = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P', 0];
+        let webp = [
+            b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P', 0,
+        ];
         assert_eq!(detect_image_media_type(&webp), "image/webp");
         // Unrecognised → default png
         assert_eq!(detect_image_media_type(&[0x00, 0x01, 0x02]), "image/png");

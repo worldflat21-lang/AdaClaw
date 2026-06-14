@@ -77,10 +77,8 @@ impl Channel for CliChannel {
                     Ok(bytes) => {
                         let mut metadata: HashMap<String, Value> = HashMap::new();
                         if !caption.is_empty() {
-                            metadata.insert(
-                                "caption".to_string(),
-                                Value::String(caption.to_string()),
-                            );
+                            metadata
+                                .insert("caption".to_string(), Value::String(caption.to_string()));
                         }
                         self.base
                             .handle_content(

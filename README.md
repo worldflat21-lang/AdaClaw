@@ -24,25 +24,6 @@ You can run it on your own machine, a $10 ARM board, or within a container. It c
 
 ---
 
-## Comparison
-
-|  | OpenClaw | NanoBot | PicoClaw | ZeroClaw | **AdaClaw** |
-|--|--|--|--|--|--|
-| **Language** | TypeScript | Python | Go | Rust | **Rust** |
-| **Deploy deps** | Node.js | Python | None | None | **None** |
-| **RAM** | > 1 GB | > 100 MB | < 10 MB | < 5 MB | **< 5 MB** |
-| **Startup** | > 500 s | > 30 s | < 1 s | < 10 ms | **< 50 ms** |
-| **Multi-Agent** | ✅ | ✅ | ✅ | ❌ | ✅ config-driven + async delegate |
-| **MCP** | ❌ | ✅ stdio + HTTP | ❌ | ❌ | ✅ stdio + HTTP/SSE |
-| **RRF Hybrid Memory** | ❌ | ❌ | ❌ | ✅ | ✅ FTS5 + vector + local embed |
-| **Security layers** | DM pairing | basic | workspace | 4 | **7** |
-| **Provider failover** | ✅ | ❌ | ✅ | ❌ | ✅ circuit breaker |
-| **ARM / Raspberry Pi** | ❌ | partial | ✅ | ✅ | ✅ |
-
-> Startup times normalized to 0.8 GHz single-core. AdaClaw built with `--release` + `opt-level = "z"`.
-
----
-
 ## Architecture
 
 ```

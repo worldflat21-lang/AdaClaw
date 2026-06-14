@@ -4,4 +4,5 @@ pub mod observer;
 pub mod provider;
 pub mod sandbox;
 pub mod tool;
+pub mod transcribe;
 pub mod tunnel;

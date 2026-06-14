@@ -415,6 +415,24 @@ pub async fn start_daemon() -> Result<()> {
                     if let Some(proxy) = ch_cfg.extra.get("proxy") {
                         ch = ch.with_proxy(proxy.clone());
                     }
+                    // Optional Groq Whisper voice transcription
+                    // (`[channels.telegram.extra] groq_transcription = "true"`).
+                    if ch_cfg.extra.get("groq_transcription").map(String::as_str) == Some("true") {
+                        match config.providers.get("groq").and_then(|p| p.api_key.clone()) {
+                            Some(groq_key) => {
+                                let whisper =
+                                    adaclaw_providers::groq::GroqWhisper::new(groq_key, None);
+                                let lang = ch_cfg.extra.get("transcription_language").cloned();
+                                ch = ch.with_transcriber(Arc::new(whisper), lang);
+                                info!("Telegram '{}': Groq Whisper transcription enabled", chan_name);
+                            }
+                            None => warn!(
+                                "Telegram '{}': groq_transcription=true but no Groq API key \
+                                 (set [providers.groq].api_key or GROQ_API_KEY)",
+                                chan_name
+                            ),
+                        }
+                    }
                     channel_manager.register(Arc::new(ch));
                     info!("Registered telegram channel '{}'", chan_name);
                 } else {

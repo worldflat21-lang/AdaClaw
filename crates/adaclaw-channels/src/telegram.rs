@@ -131,6 +131,10 @@ pub struct TelegramChannel {
     bot_username: Arc<tokio::sync::Mutex<Option<String>>>,
     /// 机器人代理（可选）
     proxy: Option<String>,
+    /// 可选语音转录器（Groq Whisper），配置后自动转录 voice/audio 消息。
+    transcriber: Option<Arc<dyn adaclaw_core::transcribe::Transcriber>>,
+    /// 转录语言（如 "zh"/"en"），None = 自动检测。
+    transcription_language: Option<String>,
 }
 
 impl TelegramChannel {
@@ -152,7 +156,21 @@ impl TelegramChannel {
             mention_only: false,
             bot_username: Arc::new(tokio::sync::Mutex::new(None)),
             proxy: None,
+            transcriber: None,
+            transcription_language: None,
         }
+    }
+
+    /// Attach a voice transcriber (e.g. Groq Whisper). When set, incoming
+    /// voice/audio messages are downloaded and transcribed to text.
+    pub fn with_transcriber(
+        mut self,
+        transcriber: Arc<dyn adaclaw_core::transcribe::Transcriber>,
+        language: Option<String>,
+    ) -> Self {
+        self.transcriber = Some(transcriber);
+        self.transcription_language = language;
+        self
     }
 
     pub fn with_allow_from(mut self, allow_from: Vec<String>) -> Self {
@@ -793,6 +811,8 @@ impl TelegramChannel {
 
         // ── 处理媒体附件 ──────────────────────────────────────────────────────
         let mut metadata_extra: HashMap<String, Value> = HashMap::new();
+        // Voice/audio to transcribe if a transcriber is configured: (file_id, filename hint).
+        let mut voice_to_transcribe: Option<(String, &'static str)> = None;
         if let Some(photos) = &msg.photo
             && let Some(largest) = photos.last()
         {
@@ -808,6 +828,7 @@ impl TelegramChannel {
                 "voice_file_id".to_string(),
                 Value::String(voice.file_id.clone()),
             );
+            voice_to_transcribe = Some((voice.file_id.clone(), "voice.ogg"));
         }
         if let Some(audio) = &msg.audio {
             content_parts.push("[audio]".to_string());
@@ -815,6 +836,7 @@ impl TelegramChannel {
                 "audio_file_id".to_string(),
                 Value::String(audio.file_id.clone()),
             );
+            voice_to_transcribe = Some((audio.file_id.clone(), "audio.mp3"));
         }
         if let Some(doc) = &msg.document {
             content_parts.push("[file]".to_string());
@@ -868,6 +890,42 @@ impl TelegramChannel {
         }
 
         // ── 上报到 Bus ────────────────────────────────────────────────────────
+        // Voice/audio → transcribe to text when a transcriber is configured.
+        // On any failure, fall through to the normal text path (which carries the
+        // "[voice]" placeholder), matching the documented graceful degradation.
+        if let (Some(transcriber), Some((file_id, filename))) =
+            (&self.transcriber, &voice_to_transcribe)
+        {
+            match self.download_file(file_id).await {
+                Ok(bytes) => {
+                    let lang = self.transcription_language.as_deref();
+                    match transcriber.transcribe(bytes, filename, lang).await {
+                        Ok(text) if !text.trim().is_empty() => {
+                            let body = if caption_text.is_empty() {
+                                format!("[voice→text] {}", text.trim())
+                            } else {
+                                format!("{}\n[voice→text] {}", caption_text, text.trim())
+                            };
+                            self.base
+                                .handle_message(
+                                    bus,
+                                    &sender_id,
+                                    &sender_name,
+                                    &chat_id_str,
+                                    &body,
+                                    metadata,
+                                )
+                                .await;
+                            return;
+                        }
+                        Ok(_) => warn!("Groq transcription returned empty text — using placeholder"),
+                        Err(e) => warn!(error = %e, "Groq transcription failed — using placeholder"),
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to download Telegram voice/audio — using placeholder"),
+            }
+        }
+
         // If the message carried a photo, download it and publish as an Image so
         // vision-capable models can see it (the daemon gates on vision and the
         // caption rides in metadata["caption"]). Otherwise publish as text.

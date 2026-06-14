@@ -11,6 +11,7 @@
 //! - accepts voice/audio file bytes (multipart/form-data)
 
 use anyhow::{Result, anyhow};
+use async_trait::async_trait;
 use reqwest::Client;
 use secrecy::{ExposeSecret, Secret};
 use serde_json::Value;
@@ -43,13 +44,19 @@ impl GroqWhisper {
             client: Client::new(),
         }
     }
+}
 
+/// Implements the core [`Transcriber`](adaclaw_core::transcribe::Transcriber)
+/// trait so channels can transcribe voice messages without depending on this
+/// crate.
+#[async_trait]
+impl adaclaw_core::transcribe::Transcriber for GroqWhisper {
     /// 转录音频文件字节
     ///
     /// `audio_bytes`：音频文件内容（ogg/mp3/m4a/wav 等）
     /// `filename`：提示文件格式（如 "voice.ogg"）
     /// `language`：可选语言代码（如 "zh"，None = 自动检测）
-    pub async fn transcribe(
+    async fn transcribe(
         &self,
         audio_bytes: Vec<u8>,
         filename: &str,

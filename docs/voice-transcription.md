@@ -1,10 +1,10 @@
 # 语音转文字（Groq Whisper）
 
-AdaClaw 支持通过 **Groq Whisper API** 自动转录 Telegram 语音/音频消息，极低配置成本，极快转录速度。
+AdaClaw 支持通过 **Groq Whisper API** 自动转录 Telegram 语音/音频消息，极低配置成本，极快转录速度。转录后的文本以 `[voice→text] …` 前缀交给 Agent，与普通文本消息一样处理；转录失败时优雅降级为 `[voice]` 占位，不丢消息。
 
 ## 效果
 
-发送语音消息 → Groq Whisper 自动转录 → 以文本形式交给 Agent 处理，附注 `[语音转文字]` 标记。
+发送语音消息 → Groq Whisper 自动转录 → 以文本形式交给 Agent 处理，附注 `[voice→text]` 标记。
 
 ## 快速开始
 
@@ -89,7 +89,7 @@ TelegramChannel 检测到 voice/audio 类型
         ↓
     返回转录文本
         ↓
-消息内容 = "[语音转文字] " + 转录文本
+消息内容 = "[voice→text] " + 转录文本
     ↓
 Agent 处理（与普通文本消息相同）
 ```

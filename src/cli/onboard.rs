@@ -38,20 +38,29 @@ pub async fn run_onboard() {
 
     println!("  Supported providers:");
     println!("    1. openrouter   — 200+ models via one API key (recommended)");
-    println!("    2. openai       — GPT-4o, o1, GPT-4 Turbo");
-    println!("    3. anthropic    — Claude Sonnet & Opus");
-    println!("    4. deepseek     — DeepSeek Chat & Reasoner (affordable)");
-    println!("    5. ollama       — Local models (no API key needed)");
-    println!("    6. other        — Any OpenAI-compatible endpoint");
+    println!("    2. openai       — GPT (ChatGPT)");
+    println!("    3. anthropic    — Claude");
+    println!("    4. deepseek     — DeepSeek (affordable)");
+    println!("    5. glm          — Zhipu GLM / 智谱 (affordable)");
+    println!("    6. qwen         — Alibaba Qwen / 通义 (affordable)");
+    println!("    7. moonshot     — Moonshot Kimi (affordable)");
+    println!("    8. ollama       — Local models (no API key needed)");
+    println!("    9. other        — Any OpenAI-compatible endpoint");
+    println!();
+    println!("  (Tip: any current model name works — it's sent to the API as-is.");
+    println!("   Run `adaclaw models --provider <name>` later to list live models.)");
     println!();
 
-    let provider_choice = prompt("  Choose provider [1-6, default=1]: ");
+    let provider_choice = prompt("  Choose provider [1-9, default=1]: ");
     let (provider_name, default_model) = match provider_choice.trim() {
         "2" => ("openai", "gpt-4o"),
-        "3" => ("anthropic", "claude-3-5-sonnet-20241022"),
+        "3" => ("anthropic", "claude-sonnet-4"),
         "4" => ("deepseek", "deepseek-chat"),
-        "5" => ("ollama", "llama3"),
-        "6" => ("openai", "gpt-4o"), // custom — will ask for base_url
+        "5" => ("glm", "glm-4.6"),
+        "6" => ("qwen", "qwen-plus"),
+        "7" => ("moonshot", "kimi-k2.5"),
+        "8" => ("ollama", "llama3"),
+        "9" => ("openai", "gpt-4o"), // custom — will ask for base_url
         _ => ("openrouter", "anthropic/claude-3.5-sonnet"),
     };
 
@@ -64,6 +73,8 @@ pub async fn run_onboard() {
             "openai" => "https://platform.openai.com/api-keys",
             "anthropic" => "https://console.anthropic.com/settings/keys",
             "deepseek" => "https://platform.deepseek.com/api_keys",
+            "qwen" => "https://dashscope.console.aliyun.com/apiKey",
+            "moonshot" => "https://platform.moonshot.cn/console/api-keys",
             _ => "",
         };
         if !key_url.is_empty() {
@@ -73,8 +84,8 @@ pub async fn run_onboard() {
         key.trim().to_string()
     };
 
-    // Custom base_url for provider 6
-    let base_url = if provider_choice.trim() == "6" {
+    // Custom base_url for the "other" choice
+    let base_url = if provider_choice.trim() == "9" {
         let url = prompt("  Custom base URL (e.g. http://localhost:8080/v1): ");
         url.trim().to_string()
     } else {

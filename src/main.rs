@@ -45,6 +45,12 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
     },
+    /// List the models a provider currently offers (queried live via its API)
+    Models {
+        /// Provider name (default: first configured, e.g. deepseek/glm/openai)
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Manage and validate configuration
     Config {
         #[command(subcommand)]
@@ -162,6 +168,10 @@ async fn async_dispatch(cli: Cli) -> anyhow::Result<()> {
             run_chat(provider.as_deref(), model.as_deref()).await?;
         }
 
+        Commands::Models { provider } => {
+            cmd_models(provider.as_deref()).await?;
+        }
+
         Commands::Config { action } => match action {
             ConfigAction::Check { file } => {
                 cmd_config_check(file);
@@ -213,6 +223,58 @@ async fn async_dispatch(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         },
+    }
+    Ok(())
+}
+
+// ── `adaclaw models` — list a provider's live model catalog ──────────────────
+
+/// `adaclaw models [--provider X]` — query a provider for the models it
+/// currently offers (via `GET /v1/models` etc.). Useful because model names
+/// move fast: AdaClaw forwards whatever `model` string you configure as-is, so
+/// this shows the current valid names without waiting for a code update.
+async fn cmd_models(provider_name: Option<&str>) -> anyhow::Result<()> {
+    let cfg = config::Config::load();
+
+    let (pname, pcfg) = if let Some(name) = provider_name {
+        (
+            name.to_string(),
+            cfg.providers.get(name).cloned().unwrap_or_default(),
+        )
+    } else {
+        cfg.providers
+            .iter()
+            .next()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .unwrap_or_else(|| ("openai".to_string(), Default::default()))
+    };
+
+    let provider = adaclaw_providers::router::create_provider(
+        &pname,
+        pcfg.api_key.as_deref(),
+        pcfg.base_url.as_deref(),
+    )?;
+
+    println!("Querying models from provider '{}'…", pname);
+    match provider.list_models().await {
+        Ok(Some(models)) => {
+            println!("{} model(s) available from '{}':", models.len(), pname);
+            for m in models {
+                println!("  {}", m);
+            }
+        }
+        Ok(None) => {
+            println!(
+                "Provider '{}' does not expose a model list. Any model name you \
+                 set in config is still forwarded as-is.",
+                pname
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to list models from '{}': {}", pname, e);
+            eprintln!("(Check the provider's api_key/base_url in config.toml.)");
+            std::process::exit(1);
+        }
     }
     Ok(())
 }

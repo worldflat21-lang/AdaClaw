@@ -11,11 +11,20 @@
 config_version = 1
 
 # ── Providers ──────────────────────────────────────────────────────────────────
-# At least one provider must be configured (or set API key env var).
-# Supported: openai, anthropic, openrouter, deepseek, ollama
+# At least one provider must be configured. Put the key in `api_key` here; for
+# OpenAI/Anthropic you may instead set the OPENAI_API_KEY / ANTHROPIC_API_KEY
+# environment variable.
+#
+# Supported (config name): openai, anthropic, gemini, xai (Grok), openrouter,
+# mistral, groq, deepseek, glm (Zhipu), qwen (Alibaba), moonshot (Kimi),
+# minimax, ollama (local).
+#
+# `model` is sent to the API as-is, so any *current* model name works without an
+# AdaClaw update. List a provider's live models with:
+#   adaclaw models --provider <name>
 
 [providers.openrouter]
-api_key = "sk-or-..."              # Or env var: OPENROUTER_API_KEY
+api_key = "sk-or-..."
 default_model = "anthropic/claude-3.5-sonnet"
 timeout_secs = 60
 
@@ -27,11 +36,24 @@ timeout_secs = 60
 
 # [providers.anthropic]
 # api_key = "sk-ant-..."           # Or env var: ANTHROPIC_API_KEY
-# default_model = "claude-3-5-sonnet-20241022"
+# default_model = "claude-sonnet-4"
 
+# ── China-based providers (often cheaper); endpoints are built-in ──
 # [providers.deepseek]
-# api_key = "sk-..."               # Or env var: DEEPSEEK_API_KEY
-# default_model = "deepseek-chat"
+# api_key = "sk-..."
+# default_model = "deepseek-chat"          # or "deepseek-reasoner"
+
+# [providers.glm]                          # Zhipu AI / Z.AI
+# api_key = "..."
+# default_model = "glm-4.6"
+
+# [providers.qwen]                         # Alibaba DashScope (通义千问)
+# api_key = "..."
+# default_model = "qwen-plus"              # or qwen-max / qwen-turbo
+
+# [providers.moonshot]                     # Moonshot AI (Kimi)
+# api_key = "..."
+# default_model = "kimi-k2.5"
 
 # [providers.ollama]
 # base_url = "http://localhost:11434"

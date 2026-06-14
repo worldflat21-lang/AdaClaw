@@ -5,11 +5,16 @@
 //! ## 请求格式
 //! ```json
 //! {
-//!   "message": "Hello, what can you do?",
+//!   "message": "What's in this image?",
 //!   "session_id": "optional-session-uuid",
-//!   "agent": "optional-agent-id"
+//!   "agent": "optional-agent-id",
+//!   "images": [
+//!     { "media_type": "image/png", "data_base64": "iVBORw0KGgo..." }
+//!   ]
 //! }
 //! ```
+//! `images` is optional (vision-capable models only) and may contain several.
+//! When `images` is present, `message` may be empty.
 //!
 //! ## 响应格式
 //! ```json
@@ -71,6 +76,19 @@ pub struct ChatRequest {
     /// 可选指定目标 Agent ID（不填时走路由规则）
     #[allow(dead_code)]
     pub agent: Option<String>,
+    /// 可选图片附件（base64 编码），供具备 vision 能力的模型使用。
+    /// 通过 `metadata["images"]` 传给 daemon，可带多张。
+    #[serde(default)]
+    pub images: Vec<ImageInput>,
+}
+
+/// 单张图片输入（base64），字段对齐 `adaclaw_core::provider::ImageData`。
+#[derive(Deserialize)]
+pub struct ImageInput {
+    /// MIME 类型，如 `"image/png"` / `"image/jpeg"`。
+    pub media_type: String,
+    /// base64 编码的图片字节（不含 `data:` 前缀）。
+    pub data_base64: String,
 }
 
 #[derive(Serialize)]
@@ -96,10 +114,10 @@ pub async fn chat(body: Option<Json<ChatRequest>>) -> Response {
         }
     };
 
-    if req.message.trim().is_empty() {
+    if req.message.trim().is_empty() && req.images.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "'message' field cannot be empty"})),
+            Json(json!({"error": "provide a non-empty 'message' and/or 'images'"})),
         )
             .into_response();
     }
@@ -139,6 +157,18 @@ pub async fn chat(body: Option<Json<ChatRequest>>) -> Response {
     // 订阅出站广播 **在发送入站消息之前**，防止漏接快速响应
     let mut outbound_rx = outbound_tx.subscribe();
 
+    // Images ride in metadata["images"] as a base64 array; the daemon turns them
+    // into vision attachments (gated on the model's vision capability).
+    let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
+    if !req.images.is_empty() {
+        let arr: Vec<serde_json::Value> = req
+            .images
+            .iter()
+            .map(|i| json!({"media_type": i.media_type, "data_base64": i.data_base64}))
+            .collect();
+        metadata.insert("images".to_string(), json!(arr));
+    }
+
     // 构造 InboundMessage
     let msg = InboundMessage {
         id: Uuid::new_v4(),
@@ -148,7 +178,7 @@ pub async fn chat(body: Option<Json<ChatRequest>>) -> Response {
         sender_name: "Gateway".to_string(),
         content: MessageContent::Text(req.message),
         reply_to: None,
-        metadata: HashMap::new(),
+        metadata,
     };
 
     // 发送消息到 bus
@@ -220,5 +250,32 @@ pub async fn chat(body: Option<Json<ChatRequest>>) -> Response {
             })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_request_images_optional() {
+        let r: ChatRequest = serde_json::from_str(r#"{"message":"hi"}"#).unwrap();
+        assert_eq!(r.message, "hi");
+        assert!(r.images.is_empty());
+    }
+
+    #[test]
+    fn chat_request_parses_multiple_images() {
+        let body = r#"{
+            "message": "compare these",
+            "images": [
+                {"media_type":"image/png","data_base64":"AAAA"},
+                {"media_type":"image/jpeg","data_base64":"BBBB"}
+            ]
+        }"#;
+        let r: ChatRequest = serde_json::from_str(body).unwrap();
+        assert_eq!(r.images.len(), 2);
+        assert_eq!(r.images[0].media_type, "image/png");
+        assert_eq!(r.images[1].data_base64, "BBBB");
     }
 }

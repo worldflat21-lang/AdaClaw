@@ -888,21 +888,18 @@ async fn agent_dispatch_loop(
                     logger.log_message(&msg.channel, &msg.sender_id, &preview);
                 }
 
-                // ── 提取文本 + 可选图片 ────────────────────────────────────────
-                // Text passes through. An Image becomes a vision attachment (its
-                // caption, if any, rides in metadata["caption"]). Audio/File are
-                // not yet wired end-to-end (see follow-ups) and are skipped.
-                let (text, image_bytes): (String, Option<Vec<u8>>) = match &msg.content {
-                    MessageContent::Text(t) => (t.clone(), None),
-                    MessageContent::Image(bytes) => {
-                        let caption = msg
-                            .metadata
-                            .get("caption")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        (caption, Some(bytes.clone()))
-                    }
+                // ── 提取文本 + 图片 ────────────────────────────────────────────
+                // Text → the prompt. Images arrive either as a MessageContent::Image
+                // (Telegram/CLI, raw bytes) or as a metadata["images"] base64 array
+                // (HTTP /v1/chat, possibly several). Audio/File aren't wired yet.
+                let text = match &msg.content {
+                    MessageContent::Text(t) => t.clone(),
+                    MessageContent::Image(_) => msg
+                        .metadata
+                        .get("caption")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     other => {
                         let kind = match other {
                             MessageContent::Audio(_) => "audio",
@@ -913,6 +910,7 @@ async fn agent_dispatch_loop(
                         continue;
                     }
                 };
+                let raw_images = collect_inbound_images(&msg.content, &msg.metadata);
 
                 // ── 路由到目标 Agent ──────────────────────────────────────────
                 let agent_id = router.route_or(&msg, registry.default_agent_id());
@@ -931,29 +929,24 @@ async fn agent_dispatch_loop(
                     }
                 };
 
-                // ── Vision：把图片字节转成模型可用的附件 ──────────────────────
+                // ── Vision 门控 ────────────────────────────────────────────────
                 // 只有声明 vision 能力的 provider 才会收到图片；否则保留文本并
                 // 追加一句说明，避免用户发了图却得到沉默。
                 let mut text = text;
-                let images: Vec<adaclaw_core::provider::ImageData> = match image_bytes {
-                    Some(bytes) if instance.provider.supports_vision() => {
-                        vec![adaclaw_core::provider::ImageData {
-                            media_type: detect_image_media_type(&bytes).to_string(),
-                            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                        }]
+                let images: Vec<adaclaw_core::provider::ImageData> = if raw_images.is_empty() {
+                    Vec::new()
+                } else if instance.provider.supports_vision() {
+                    raw_images
+                } else {
+                    let note = "(An image was attached, but the current model cannot \
+                                process images.)";
+                    if text.is_empty() {
+                        text = note.to_string();
+                    } else {
+                        text.push_str("\n\n");
+                        text.push_str(note);
                     }
-                    Some(_) => {
-                        let note = "(An image was attached, but the current model cannot \
-                                    process images.)";
-                        if text.is_empty() {
-                            text = note.to_string();
-                        } else {
-                            text.push_str("\n\n");
-                            text.push_str(note);
-                        }
-                        Vec::new()
-                    }
-                    None => Vec::new(),
+                    Vec::new()
                 };
 
                 // ── 构建工具列表：基础工具 + MCP 工具 + 可选 DelegateTool ────
@@ -1172,6 +1165,47 @@ fn detect_image_media_type(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// Collect images attached to an inbound message, from either:
+///   1. `metadata["images"]` — a base64 array `[{media_type, data_base64}, …]`
+///      (used by the HTTP `/v1/chat` endpoint; supports several images), or
+///   2. a `MessageContent::Image` payload — raw bytes whose MIME type is sniffed
+///      from magic bytes (used by Telegram/CLI; one image).
+///
+/// Returns images *un-gated* by vision capability — the caller decides whether
+/// the active provider can actually use them.
+fn collect_inbound_images(
+    content: &MessageContent,
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Vec<adaclaw_core::provider::ImageData> {
+    use adaclaw_core::provider::ImageData;
+
+    // 1. metadata["images"]: [{ "media_type": "...", "data_base64": "..." }, …]
+    if let Some(arr) = metadata.get("images").and_then(|v| v.as_array()) {
+        let imgs: Vec<ImageData> = arr
+            .iter()
+            .filter_map(|v| {
+                Some(ImageData {
+                    media_type: v.get("media_type")?.as_str()?.to_string(),
+                    data_base64: v.get("data_base64")?.as_str()?.to_string(),
+                })
+            })
+            .collect();
+        if !imgs.is_empty() {
+            return imgs;
+        }
+    }
+
+    // 2. MessageContent::Image(bytes): sniff MIME + base64-encode.
+    if let MessageContent::Image(bytes) = content {
+        return vec![ImageData {
+            media_type: detect_image_media_type(bytes).to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }];
+    }
+
+    Vec::new()
+}
+
 // ── System Channel 处理 ───────────────────────────────────────────────────────
 
 fn handle_system_message(msg: InboundMessage, bus: &Arc<AppMessageBus>) {
@@ -1225,7 +1259,9 @@ fn handle_system_message(msg: InboundMessage, bus: &Arc<AppMessageBus>) {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_image_media_type;
+    use super::{collect_inbound_images, detect_image_media_type};
+    use adaclaw_core::channel::MessageContent;
+    use std::collections::HashMap;
 
     #[test]
     fn detects_common_image_formats_from_magic_bytes() {
@@ -1236,5 +1272,39 @@ mod tests {
         assert_eq!(detect_image_media_type(&webp), "image/webp");
         // Unrecognised → default png
         assert_eq!(detect_image_media_type(&[0x00, 0x01, 0x02]), "image/png");
+    }
+
+    #[test]
+    fn collect_images_from_metadata_array_supports_multiple() {
+        let mut md: HashMap<String, serde_json::Value> = HashMap::new();
+        md.insert(
+            "images".to_string(),
+            serde_json::json!([
+                {"media_type": "image/png", "data_base64": "AAAA"},
+                {"media_type": "image/jpeg", "data_base64": "BBBB"}
+            ]),
+        );
+        let imgs = collect_inbound_images(&MessageContent::Text("hi".into()), &md);
+        assert_eq!(imgs.len(), 2);
+        assert_eq!(imgs[0].media_type, "image/png");
+        assert_eq!(imgs[0].data_base64, "AAAA");
+        assert_eq!(imgs[1].media_type, "image/jpeg");
+    }
+
+    #[test]
+    fn collect_images_from_message_content_sniffs_mime() {
+        // A PNG magic-byte payload via MessageContent::Image.
+        let png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a];
+        let imgs = collect_inbound_images(&MessageContent::Image(png), &HashMap::new());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].media_type, "image/png");
+        // base64 of the bytes is present.
+        assert!(!imgs[0].data_base64.is_empty());
+    }
+
+    #[test]
+    fn collect_images_none_for_plain_text() {
+        let imgs = collect_inbound_images(&MessageContent::Text("hi".into()), &HashMap::new());
+        assert!(imgs.is_empty());
     }
 }

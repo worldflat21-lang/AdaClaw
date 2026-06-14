@@ -179,6 +179,32 @@ impl TelegramChannel {
         format!("https://api.telegram.org/bot{}/{}", self.token, method)
     }
 
+    /// Download a file's bytes by `file_id` via the two-step Telegram flow:
+    /// `getFile` (resolve `file_path`) → `GET /file/bot<token>/<file_path>`.
+    ///
+    /// Used to fetch photos so vision-capable models can actually see them.
+    async fn download_file(&self, file_id: &str) -> Result<Vec<u8>> {
+        // 1. getFile → file_path
+        let resp = self
+            .client
+            .get(self.api_url("getFile"))
+            .query(&[("file_id", file_id)])
+            .send()
+            .await?;
+        let data: Value = resp.json().await?;
+        let file_path = data["result"]["file_path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("getFile returned no file_path for {}", file_id))?;
+
+        // 2. download the bytes (note: /file/ path, not /bot<token>/<method>)
+        let dl_url = format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            self.token, file_path
+        );
+        let bytes = self.client.get(&dl_url).send().await?.bytes().await?;
+        Ok(bytes.to_vec())
+    }
+
     // ── Bot API 调用 ──────────────────────────────────────────────────────────
 
     async fn call_api<T: for<'de> Deserialize<'de>>(
@@ -758,6 +784,9 @@ impl TelegramChannel {
         } else {
             raw_text.to_string()
         };
+        // Keep a copy of the user's text to use as the image caption below
+        // (`text_content` is moved into `content_parts` for the text path).
+        let caption_text = text_content.clone();
         if !text_content.is_empty() {
             content_parts.push(text_content);
         }
@@ -839,6 +868,45 @@ impl TelegramChannel {
         }
 
         // ── 上报到 Bus ────────────────────────────────────────────────────────
+        // If the message carried a photo, download it and publish as an Image so
+        // vision-capable models can see it (the daemon gates on vision and the
+        // caption rides in metadata["caption"]). Otherwise publish as text.
+        let photo_file_id = metadata
+            .get("photo_file_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        if let Some(file_id) = photo_file_id {
+            match self.download_file(&file_id).await {
+                Ok(bytes) => {
+                    if !caption_text.is_empty() {
+                        metadata.insert(
+                            "caption".to_string(),
+                            Value::String(caption_text.clone()),
+                        );
+                    }
+                    self.base
+                        .handle_content(
+                            bus,
+                            &sender_id,
+                            &sender_name,
+                            &chat_id_str,
+                            MessageContent::Image(bytes),
+                            metadata,
+                        )
+                        .await;
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        file_id = %file_id,
+                        "Failed to download Telegram photo — falling back to text placeholder"
+                    );
+                }
+            }
+        }
+
         self.base
             .handle_message(
                 bus,
